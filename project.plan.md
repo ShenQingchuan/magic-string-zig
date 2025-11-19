@@ -58,14 +58,14 @@
     - **对比测试**：与原版 magic-string 的 Source Map 输出完全一致
     - 完整的测试覆盖（27 个测试全部通过，包括 6 个对比测试）
 
-## Phase 5: JS 侧优化
+## Phase 5: JS 侧优化 ⏳
 - [ ] **Task 5.1**: 创建 JS Class 包装器
-    - 创建 `src/MagicString.js` 封装函数式 API
+    - 创建 `index.ts` 封装函数式 API
     - 提供优雅的 `new MagicString(source)` 接口
     - 使用 `FinalizationRegistry` 自动内存管理
-- [x] **Task 5.2**: 迁移测试到 Vitest
-    - 使用 Vitest 重写测试套件
-    - 提供更好的测试体验和断言
+- [ ] **Task 5.2**: 迁移测试到 Vitest
+    - 更新 `playground/magic-string.test.ts` 使用新的类
+    - 验证所有测试通过
 
 ---
 
