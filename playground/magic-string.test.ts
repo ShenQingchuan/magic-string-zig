@@ -18,6 +18,7 @@ interface MagicStringAddon {
   appendLeft(handle: number, index: number, content: string): void;
   appendRight(handle: number, index: number, content: string): void;
   overwrite(handle: number, start: number, end: number, content: string): void;
+  generateMap(handle: number): string;
   destroy(handle: number): void;
 }
 
@@ -216,6 +217,258 @@ describe('MagicString - Phase 3: overwrite', () => {
     addon.overwrite(handle, 0, 1, "answer");
     const result = addon.toString(handle);
     expect(result).toBe("answer = 1");
+  });
+
+  it('应该能在 overwrite 后的位置继续 appendLeft', () => {
+    const handle = addon.createMagicString("abc");
+    handles.push(handle);
+    
+    addon.overwrite(handle, 1, 2, "XXX");
+    expect(addon.toString(handle)).toBe("aXXXc");
+    
+    addon.appendLeft(handle, 1, ">>>");
+    const result = addon.toString(handle);
+    expect(result).toBe("a>>>XXXc");
+  });
+
+  it('应该能在 overwrite 后的位置继续 appendRight', () => {
+    const handle = addon.createMagicString("abc");
+    handles.push(handle);
+    
+    addon.overwrite(handle, 1, 2, "XXX");
+    expect(addon.toString(handle)).toBe("aXXXc");
+    
+    addon.appendRight(handle, 1, "<<<");
+    const result = addon.toString(handle);
+    expect(result).toBe("a<<<XXXc");
+  });
+
+  it('应该能在 overwrite 范围内的多个位置 append', () => {
+    const handle = addon.createMagicString("abcdef");
+    handles.push(handle);
+    
+    addon.overwrite(handle, 2, 4, "XX");
+    expect(addon.toString(handle)).toBe("abXXef");
+    
+    addon.appendLeft(handle, 2, "[");
+    addon.appendRight(handle, 4, "]");
+    const result = addon.toString(handle);
+    expect(result).toBe("ab[XX]ef");
+  });
+});
+
+describe('MagicString - Phase 4: Source Map', () => {
+  const handles: number[] = [];
+
+  afterEach(() => {
+    handles.forEach(h => addon.destroy(h));
+    handles.length = 0;
+  });
+
+  it('应该生成基础的 Source Map', () => {
+    const handle = addon.createMagicString("abc");
+    handles.push(handle);
+
+    const mapJson = addon.generateMap(handle);
+    const map = JSON.parse(mapJson);
+
+    // 验证必需字段
+    expect(map.version).toBe(3);
+    expect(map.sources).toEqual(['']);
+    expect(map.names).toEqual([]);
+    expect(typeof map.mappings).toBe('string');
+    expect(map.mappings.length).toBeGreaterThan(0);
+  });
+
+  it('应该为 overwrite 操作生成正确的映射', () => {
+    const handle = addon.createMagicString("var x = 1");
+    handles.push(handle);
+
+    addon.overwrite(handle, 4, 5, "answer");
+    const result = addon.toString(handle);
+    expect(result).toBe("var answer = 1");
+
+    const mapJson = addon.generateMap(handle);
+    const map = JSON.parse(mapJson);
+
+    // 验证基本结构
+    expect(map.version).toBe(3);
+    expect(map.mappings).toBeTruthy();
+    // mappings 应该包含映射信息
+    expect(map.mappings.length).toBeGreaterThan(0);
+  });
+
+  it('应该为 appendLeft 操作生成映射', () => {
+    const handle = addon.createMagicString("hello");
+    handles.push(handle);
+
+    addon.appendLeft(handle, 0, ">>> ");
+    const result = addon.toString(handle);
+    expect(result).toBe(">>> hello");
+
+    const mapJson = addon.generateMap(handle);
+    const map = JSON.parse(mapJson);
+    
+    expect(map.version).toBe(3);
+    expect(map.mappings).toBeTruthy();
+  });
+});
+
+describe('MagicString - 对比测试: 对比原版 magic-string', () => {
+  // 导入原版 magic-string
+  const MagicStringJS = require('magic-string');
+  const handles: number[] = [];
+
+  afterEach(() => {
+    handles.forEach(h => addon.destroy(h));
+    handles.length = 0;
+  });
+
+  it('对比测试: 简单字符串应生成相同的 mappings', () => {
+    const source = 'abc';
+    
+    // Zig 版本
+    const handleZig = addon.createMagicString(source);
+    handles.push(handleZig);
+    const mapZig = JSON.parse(addon.generateMap(handleZig));
+    
+    // JS 版本
+    const msJS = new MagicStringJS(source);
+    const mapJS = msJS.generateMap();
+    
+    // 对比关键字段
+    expect(mapZig.version).toBe(mapJS.version);
+    expect(mapZig.sources).toEqual(mapJS.sources);
+    expect(mapZig.names).toEqual(mapJS.names);
+    expect(mapZig.mappings).toBe(mapJS.mappings);
+  });
+
+  it('对比测试: appendLeft 应生成相同的 mappings', () => {
+    const source = 'hello';
+    
+    // Zig 版本
+    const handleZig = addon.createMagicString(source);
+    handles.push(handleZig);
+    addon.appendLeft(handleZig, 0, '>>> ');
+    const resultZig = addon.toString(handleZig);
+    const mapZig = JSON.parse(addon.generateMap(handleZig));
+    
+    // JS 版本
+    const msJS = new MagicStringJS(source);
+    msJS.appendLeft(0, '>>> ');
+    const resultJS = msJS.toString();
+    const mapJS = msJS.generateMap();
+    
+    // 验证输出一致
+    expect(resultZig).toBe(resultJS);
+    
+    // 对比 Source Map
+    expect(mapZig.version).toBe(mapJS.version);
+    expect(mapZig.sources).toEqual(mapJS.sources);
+    expect(mapZig.mappings).toBe(mapJS.mappings);
+  });
+
+  it('对比测试: appendRight 应生成相同的 mappings', () => {
+    const source = 'hello';
+    
+    // Zig 版本
+    const handleZig = addon.createMagicString(source);
+    handles.push(handleZig);
+    addon.appendRight(handleZig, 5, ' <<<');
+    const resultZig = addon.toString(handleZig);
+    const mapZig = JSON.parse(addon.generateMap(handleZig));
+    
+    // JS 版本
+    const msJS = new MagicStringJS(source);
+    msJS.appendRight(5, ' <<<');
+    const resultJS = msJS.toString();
+    const mapJS = msJS.generateMap();
+    
+    // 验证输出一致
+    expect(resultZig).toBe(resultJS);
+    
+    // 对比 Source Map
+    expect(mapZig.mappings).toBe(mapJS.mappings);
+  });
+
+  it('对比测试: overwrite 应生成相同的 mappings', () => {
+    const source = 'var x = 1';
+    
+    // Zig 版本
+    const handleZig = addon.createMagicString(source);
+    handles.push(handleZig);
+    addon.overwrite(handleZig, 4, 5, 'answer');
+    const resultZig = addon.toString(handleZig);
+    const mapZig = JSON.parse(addon.generateMap(handleZig));
+    
+    // JS 版本
+    const msJS = new MagicStringJS(source);
+    msJS.overwrite(4, 5, 'answer');
+    const resultJS = msJS.toString();
+    const mapJS = msJS.generateMap();
+    
+    // 验证输出一致
+    expect(resultZig).toBe(resultJS);
+    
+    // 对比 Source Map
+    expect(mapZig.version).toBe(mapJS.version);
+    expect(mapZig.mappings).toBe(mapJS.mappings);
+  });
+
+  it('对比测试: 复杂操作组合应生成相同的 mappings', () => {
+    const source = 'var x = 1';
+    
+    // Zig 版本
+    const handleZig = addon.createMagicString(source);
+    handles.push(handleZig);
+    addon.appendLeft(handleZig, 0, '// Comment\n');
+    addon.overwrite(handleZig, 4, 5, 'answer');
+    addon.appendRight(handleZig, 9, ';');
+    const resultZig = addon.toString(handleZig);
+    const mapZig = JSON.parse(addon.generateMap(handleZig));
+    
+    // JS 版本
+    const msJS = new MagicStringJS(source);
+    msJS.appendLeft(0, '// Comment\n');
+    msJS.overwrite(4, 5, 'answer');
+    msJS.appendRight(9, ';');
+    const resultJS = msJS.toString();
+    const mapJS = msJS.generateMap();
+    
+    // 验证输出一致
+    expect(resultZig).toBe(resultJS);
+    
+    // 对比 Source Map
+    expect(mapZig.version).toBe(mapJS.version);
+    expect(mapZig.mappings).toBe(mapJS.mappings);
+  });
+
+  it('对比测试: 多次 overwrite 应生成相同的 mappings', () => {
+    const source = 'var x = 1 + 2';
+    
+    // Zig 版本
+    const handleZig = addon.createMagicString(source);
+    handles.push(handleZig);
+    addon.overwrite(handleZig, 4, 5, 'a');
+    addon.overwrite(handleZig, 8, 9, '10');
+    addon.overwrite(handleZig, 12, 13, '20');
+    const resultZig = addon.toString(handleZig);
+    const mapZig = JSON.parse(addon.generateMap(handleZig));
+    
+    // JS 版本
+    const msJS = new MagicStringJS(source);
+    msJS.overwrite(4, 5, 'a');
+    msJS.overwrite(8, 9, '10');
+    msJS.overwrite(12, 13, '20');
+    const resultJS = msJS.toString();
+    const mapJS = msJS.generateMap();
+    
+    // 验证输出一致
+    expect(resultZig).toBe(resultJS);
+    
+    // 对比 Source Map
+    expect(mapZig.version).toBe(mapJS.version);
+    expect(mapZig.mappings).toBe(mapJS.mappings);
   });
 });
 

@@ -1,4 +1,5 @@
 const std = @import("std");
+const sourcemap = @import("sourcemap.zig");
 
 /// Segment 表示字符串的一个片段
 /// 采用连续内存的数组结构，Cache-friendly
@@ -10,6 +11,12 @@ pub const Segment = struct {
     /// null 表示这是插入的新内容
     source_offset: ?usize,
 
+    /// 该 Segment 在原始字符串中对应的范围 [start, end)
+    /// 即使被 overwrite 后，这个范围信息仍然保留
+    /// 这样可以支持在 overwrite 后的位置继续 appendLeft/Right
+    original_start: usize,
+    original_end: usize,
+
     /// 在此位置左侧插入的内容（用于 appendLeft）
     intro: ?[]const u8,
     /// 在此位置右侧插入的内容（用于 appendRight）
@@ -20,6 +27,20 @@ pub const Segment = struct {
         return Segment{
             .content = content,
             .source_offset = offset,
+            .original_start = offset,
+            .original_end = offset + content.len,
+            .intro = null,
+            .outro = null,
+        };
+    }
+
+    /// 创建一个插入内容的 Segment，但保留原始位置信息
+    pub fn fromInsertWithRange(content: []const u8, original_start: usize, original_end: usize) Segment {
+        return Segment{
+            .content = content,
+            .source_offset = null, // 插入的内容没有原始偏移
+            .original_start = original_start,
+            .original_end = original_end,
             .intro = null,
             .outro = null,
         };
@@ -30,6 +51,8 @@ pub const Segment = struct {
         return Segment{
             .content = content,
             .source_offset = null,
+            .original_start = 0,
+            .original_end = 0,
             .intro = null,
             .outro = null,
         };
@@ -213,17 +236,46 @@ pub const MagicString = struct {
     }
 
     /// appendLeft: 在指定索引的左侧插入内容
+    /// index 是相对于**原始字符串**的位置
     /// 如果该位置随后被移动（范围结束于此），插入的内容会跟随移动
     pub fn appendLeft(self: *MagicString, index: usize, content: []const u8) !void {
         if (content.len == 0) return;
 
-        // 找到包含该索引的 Segment
-        const seg_idx = try self.findSegmentIndex(index);
-        const offsets = try self.getOffsets();
-        const seg_start = offsets[seg_idx];
+        // 先尝试找到包含该原始索引的 Segment（基于 source_offset）
+        var seg_idx_opt = self.findSegmentBySourceOffset(index);
 
-        // 计算在该 Segment 内的相对位置
-        const relative_pos = index - seg_start;
+        // 如果找不到（可能因为该位置被 overwrite 了），尝试基于原始位置范围查找
+        if (seg_idx_opt == null) {
+            seg_idx_opt = self.findSegmentByOriginalPosition(index);
+        }
+
+        if (seg_idx_opt == null) {
+            // 如果还是找不到，说明 index 超出了原始字符串范围，在末尾追加
+            if (self.segments.items.len > 0) {
+                const last_idx = self.segments.items.len - 1;
+                var segment = &self.segments.items[last_idx];
+                const new_content = try self.allocator.dupe(u8, content);
+                if (segment.outro) |existing_outro| {
+                    const combined = try self.allocator.alloc(u8, new_content.len + existing_outro.len);
+                    @memcpy(combined[0..new_content.len], new_content);
+                    @memcpy(combined[new_content.len..], existing_outro);
+                    self.allocator.free(existing_outro);
+                    self.allocator.free(new_content);
+                    segment.outro = combined;
+                } else {
+                    segment.outro = new_content;
+                }
+                self.invalidateCache();
+                return;
+            }
+            return error.OffsetNotFound;
+        }
+
+        const seg_idx = seg_idx_opt.?;
+        const segment = &self.segments.items[seg_idx];
+
+        // 计算在该 Segment 内的相对位置（基于原始位置）
+        const relative_pos = index - segment.original_start;
 
         // 需要分配新的内容
         const new_content = try self.allocator.dupe(u8, content);
@@ -231,33 +283,33 @@ pub const MagicString = struct {
 
         // 如果 index 正好在 Segment 开头，添加到 intro
         if (relative_pos == 0) {
-            var segment = &self.segments.items[seg_idx];
-            if (segment.intro) |existing_intro| {
+            var seg = &self.segments.items[seg_idx];
+            if (seg.intro) |existing_intro| {
                 // 新内容在前，现有内容在后
                 const combined = try self.allocator.alloc(u8, new_content.len + existing_intro.len);
                 @memcpy(combined[0..new_content.len], new_content);
                 @memcpy(combined[new_content.len..], existing_intro);
                 self.allocator.free(existing_intro);
                 self.allocator.free(new_content);
-                segment.intro = combined;
+                seg.intro = combined;
             } else {
-                segment.intro = new_content;
+                seg.intro = new_content;
             }
         } else {
             // 需要分裂 Segment，在分裂点左侧插入
             try self.splitSegment(seg_idx, relative_pos);
             // 分裂后，新的 Segment 在 seg_idx + 1 位置
             // 将内容添加到右侧 Segment 的 intro
-            var segment = &self.segments.items[seg_idx + 1];
-            if (segment.intro) |existing_intro| {
+            var seg = &self.segments.items[seg_idx + 1];
+            if (seg.intro) |existing_intro| {
                 const combined = try self.allocator.alloc(u8, new_content.len + existing_intro.len);
                 @memcpy(combined[0..new_content.len], new_content);
                 @memcpy(combined[new_content.len..], existing_intro);
                 self.allocator.free(existing_intro);
                 self.allocator.free(new_content);
-                segment.intro = combined;
+                seg.intro = combined;
             } else {
-                segment.intro = new_content;
+                seg.intro = new_content;
             }
         }
 
@@ -265,46 +317,107 @@ pub const MagicString = struct {
     }
 
     /// appendRight: 在指定索引的右侧插入内容
+    /// index 是相对于**原始字符串**的位置
     /// 如果该位置随后被移动（范围开始于此），插入的内容会跟随移动
     pub fn appendRight(self: *MagicString, index: usize, content: []const u8) !void {
         if (content.len == 0) return;
 
-        const seg_idx = try self.findSegmentIndex(index);
-        const offsets = try self.getOffsets();
-        const seg_start = offsets[seg_idx];
-        const relative_pos = index - seg_start;
+        // 检查是否在原始字符串末尾
+        if (index >= self.original.len) {
+            // 在最后一个 segment 的末尾追加
+            if (self.segments.items.len > 0) {
+                const last_idx = self.segments.items.len - 1;
+                var segment = &self.segments.items[last_idx];
+                const new_content = try self.allocator.dupe(u8, content);
+                if (segment.outro) |existing_outro| {
+                    const combined = try self.allocator.alloc(u8, new_content.len + existing_outro.len);
+                    @memcpy(combined[0..new_content.len], new_content);
+                    @memcpy(combined[new_content.len..], existing_outro);
+                    self.allocator.free(existing_outro);
+                    self.allocator.free(new_content);
+                    segment.outro = combined;
+                } else {
+                    segment.outro = new_content;
+                }
+                self.invalidateCache();
+                return;
+            }
+            return error.OffsetNotFound;
+        }
+
+        // 先尝试找到包含该原始索引的 Segment（基于 source_offset）
+        var seg_idx_opt = self.findSegmentBySourceOffset(index);
+
+        // 如果找不到（可能因为该位置被 overwrite 了），尝试基于原始位置范围查找
+        if (seg_idx_opt == null) {
+            seg_idx_opt = self.findSegmentByOriginalPosition(index);
+        }
+
+        if (seg_idx_opt == null) {
+            return error.OffsetNotFound;
+        }
+
+        const seg_idx = seg_idx_opt.?;
+        const segment = &self.segments.items[seg_idx];
+
+        // 计算在该 Segment 内的相对位置（基于原始位置）
+        const relative_pos = index - segment.original_start;
 
         const new_content = try self.allocator.dupe(u8, content);
         errdefer self.allocator.free(new_content);
 
-        // 如果 index 正好在 Segment 开头，添加到 outro
+        // 计算原始范围的长度
+        const original_range_len = segment.original_end - segment.original_start;
+
+        // 如果 index 正好在 Segment 原始范围的末尾，尝试添加到下一个 segment 的 intro
+        if (relative_pos == original_range_len) {
+            // 查找下一个 segment（如果存在）
+            if (seg_idx + 1 < self.segments.items.len) {
+                var next_seg = &self.segments.items[seg_idx + 1];
+                if (next_seg.intro) |existing_intro| {
+                    const combined = try self.allocator.alloc(u8, new_content.len + existing_intro.len);
+                    @memcpy(combined[0..new_content.len], new_content);
+                    @memcpy(combined[new_content.len..], existing_intro);
+                    self.allocator.free(existing_intro);
+                    self.allocator.free(new_content);
+                    next_seg.intro = combined;
+                } else {
+                    next_seg.intro = new_content;
+                }
+                self.invalidateCache();
+                return;
+            }
+            // 如果没有下一个 segment，添加到当前 segment 的 outro
+        }
+
+        // 如果 index 正好在 Segment 原始范围的开头，添加到 intro（注意：appendRight 应该在 intro 的末尾）
         if (relative_pos == 0) {
-            var segment = &self.segments.items[seg_idx];
-            if (segment.outro) |existing_outro| {
-                // 在现有 outro 之前插入
-                const combined = try self.allocator.alloc(u8, new_content.len + existing_outro.len);
-                @memcpy(combined[0..new_content.len], new_content);
-                @memcpy(combined[new_content.len..], existing_outro);
-                self.allocator.free(existing_outro);
+            var seg = &self.segments.items[seg_idx];
+            if (seg.intro) |existing_intro| {
+                // 现有 intro 在前，新内容在后
+                const combined = try self.allocator.alloc(u8, existing_intro.len + new_content.len);
+                @memcpy(combined[0..existing_intro.len], existing_intro);
+                @memcpy(combined[existing_intro.len..], new_content);
+                self.allocator.free(existing_intro);
                 self.allocator.free(new_content);
-                segment.outro = combined;
+                seg.intro = combined;
             } else {
-                segment.outro = new_content;
+                seg.intro = new_content;
             }
         } else {
             // 需要分裂 Segment，在分裂点右侧插入
             try self.splitSegment(seg_idx, relative_pos);
             // 将内容添加到左侧 Segment 的 outro
-            var segment = &self.segments.items[seg_idx];
-            if (segment.outro) |existing_outro| {
+            var seg = &self.segments.items[seg_idx];
+            if (seg.outro) |existing_outro| {
                 const combined = try self.allocator.alloc(u8, new_content.len + existing_outro.len);
                 @memcpy(combined[0..new_content.len], new_content);
                 @memcpy(combined[new_content.len..], existing_outro);
                 self.allocator.free(existing_outro);
                 self.allocator.free(new_content);
-                segment.outro = combined;
+                seg.outro = combined;
             } else {
-                segment.outro = new_content;
+                seg.outro = new_content;
             }
         }
 
@@ -324,9 +437,14 @@ pub const MagicString = struct {
         const left_content = segment.content[0..split_pos];
         const right_content = segment.content[split_pos..];
 
+        // 计算分裂点的原始位置
+        const split_original_pos = segment.original_start + split_pos;
+
         const left_seg = Segment{
             .content = left_content,
             .source_offset = segment.source_offset,
+            .original_start = segment.original_start,
+            .original_end = split_original_pos,
             .intro = segment.intro,
             .outro = null,
         };
@@ -334,6 +452,8 @@ pub const MagicString = struct {
         const right_seg = Segment{
             .content = right_content,
             .source_offset = if (segment.source_offset) |offset| offset + split_pos else null,
+            .original_start = split_original_pos,
+            .original_end = segment.original_end,
             .intro = null,
             .outro = segment.outro,
         };
@@ -407,13 +527,29 @@ pub const MagicString = struct {
         return null;
     }
 
+    /// 根据原始字符串中的位置查找对应的 Segment 索引（基于 original_start/end 范围）
+    /// 这个函数可以找到被 overwrite 后的 Segment
+    fn findSegmentByOriginalPosition(self: *const MagicString, position: usize) ?usize {
+        for (self.segments.items, 0..) |*seg, i| {
+            // 检查 position 是否在该 segment 的原始范围内
+            if (position >= seg.original_start and position < seg.original_end) {
+                return i;
+            }
+        }
+        return null;
+    }
+
     /// 执行实际的范围替换
     fn doReplaceRange(self: *MagicString, start_idx: usize, end_idx: usize, content: []const u8, intro: ?[]const u8, outro: ?[]const u8) !void {
         // 创建新 Segment
         const new_content = try self.allocator.dupe(u8, content);
         errdefer self.allocator.free(new_content);
 
-        var new_seg = Segment.fromInsert(new_content);
+        // 获取被替换范围的原始位置信息
+        const original_start = self.segments.items[start_idx].original_start;
+        const original_end = self.segments.items[end_idx].original_end;
+
+        var new_seg = Segment.fromInsertWithRange(new_content, original_start, original_end);
         new_seg.intro = intro;
         new_seg.outro = outro;
 
@@ -438,5 +574,33 @@ pub const MagicString = struct {
         try self.segments.replaceRange(start_idx, count, &[_]Segment{new_seg});
 
         self.invalidateCache();
+    }
+
+    /// 生成 Source Map
+    ///
+    /// 根据当前的编辑操作生成符合 Source Map v3 规范的映射数据
+    ///
+    /// 参数：
+    ///   - options: Source Map 生成选项
+    ///
+    /// 返回：
+    ///   - Source Map 对象（调用者负责释放）
+    ///
+    /// 使用示例：
+    /// ```zig
+    /// const ms = try MagicString.init(allocator, "var x = 1");
+    /// try ms.overwrite(4, 5, "answer");
+    /// const map = try ms.generateMap(.{
+    ///     .file = "output.js",
+    ///     .source = "input.js",
+    /// });
+    /// defer {
+    ///     map.deinit();
+    ///     allocator.destroy(map);
+    /// }
+    /// ```
+    pub fn generateMap(self: *const MagicString, options: sourcemap.SourceMapOptions) !*sourcemap.SourceMap {
+        var generator = sourcemap.SourceMapGenerator.init(self.allocator, self, options);
+        return try generator.generate();
     }
 };

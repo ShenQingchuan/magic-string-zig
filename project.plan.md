@@ -37,8 +37,26 @@
     - 正确管理内存（释放被替换的 Segment）
     - 完整的测试覆盖（7 个测试用例全部通过）
 
-## Phase 4: Source Map 功能
-- [ ] **Task 4.1**: 实现 `generateMap()`
+## Phase 4: Source Map 功能 ✅
+- [x] **Task 4.1**: 实现 VLQ Base64 编码
+    - 符合 Source Map v3 规范的 VLQ 编码/解码
+    - 完整的单元测试覆盖
+- [x] **Task 4.2**: 定义 SourceMap 结构和 JSON 序列化
+    - `SourceMap` 结构体（version, sources, mappings 等）
+    - `toJSON()` 方法生成符合规范的 JSON
+- [x] **Task 4.3**: 实现 mappings 生成逻辑
+    - `SourceMapGenerator` 生成器
+    - 基于 Segment 数组生成 VLQ 编码的 mappings
+    - 正确处理 intro/outro 和插入内容
+- [x] **Task 4.4**: 暴露 `generateMap()` N-API
+    - 在 `MagicString` 中添加 `generateMap` 方法
+    - N-API 绑定层实现
+- [x] **Task 4.5**: Source Map 测试
+    - 基础 Source Map 生成测试
+    - overwrite 操作的映射测试
+    - appendLeft/Right 操作的映射测试
+    - **对比测试**：与原版 magic-string 的 Source Map 输出完全一致
+    - 完整的测试覆盖（27 个测试全部通过，包括 6 个对比测试）
 
 ## Phase 5: JS 侧优化
 - [ ] **Task 5.1**: 创建 JS Class 包装器

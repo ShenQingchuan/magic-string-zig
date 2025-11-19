@@ -1,6 +1,7 @@
 const std = @import("std");
 const napi = @import("napi");
 const MagicString = @import("magic_string.zig").MagicString;
+const SourceMapOptions = @import("sourcemap.zig").SourceMapOptions;
 
 /// 全局分配器，用于创建 MagicString 实例
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -105,12 +106,38 @@ fn magicStringOverwrite(env: napi.Env, handle: napi.Value, start_val: napi.Value
     return try env.create(void, {});
 }
 
+/// generateMap: 生成 Source Map
+/// JS: generateMap(handle)
+fn magicStringGenerateMap(env: napi.Env, handle: napi.Value) !napi.Value {
+    const ptr_as_f64 = try handle.getValue(f64);
+    const ptr_value: usize = @intFromFloat(ptr_as_f64);
+    const ms: *MagicString = @ptrFromInt(ptr_value);
+
+    // 暂时使用默认选项
+    const options = SourceMapOptions{};
+
+    // 生成 Source Map
+    const map = try ms.generateMap(options);
+    defer {
+        map.deinit();
+        allocator.destroy(map);
+    }
+
+    // 转换为 JSON
+    const json = try map.toJSON(allocator);
+    defer allocator.free(json);
+
+    // 返回 JSON 字符串
+    return try env.createString(.utf8, json);
+}
+
 fn init(env: napi.Env, exports: napi.Value) !napi.Value {
     try exports.setNamedProperty("createMagicString", try env.createFunction(createMagicString, "createMagicString"));
     try exports.setNamedProperty("toString", try env.createFunction(magicStringToString, "toString"));
     try exports.setNamedProperty("appendLeft", try env.createFunction(magicStringAppendLeft, "appendLeft"));
     try exports.setNamedProperty("appendRight", try env.createFunction(magicStringAppendRight, "appendRight"));
     try exports.setNamedProperty("overwrite", try env.createFunction(magicStringOverwrite, "overwrite"));
+    try exports.setNamedProperty("generateMap", try env.createFunction(magicStringGenerateMap, "generateMap"));
     try exports.setNamedProperty("destroy", try env.createFunction(destroyMagicString, "destroy"));
     return exports;
 }
