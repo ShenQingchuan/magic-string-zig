@@ -8,13 +8,19 @@ const ScenarioResult = struct {
     map: []const u8, // JSON string of the map
 };
 
+// Helper function to write JSON using std.json.fmt
+fn writeJsonValue(writer: *std.Io.Writer, value: anytype) !void {
+    const formatter = std.json.fmt(value, .{ .whitespace = .minified });
+    try formatter.format(writer);
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var results = std.ArrayList(ScenarioResult).init(allocator);
-    defer results.deinit();
+    var results: std.ArrayList(ScenarioResult) = .empty;
+    defer results.deinit(allocator);
 
     // Scenario 1: 复杂组合操作
     {
@@ -38,7 +44,7 @@ pub fn main() !void {
         }
         const map_json = try map_obj.toJSON(allocator);
 
-        try results.append(.{
+        try results.append(allocator, .{
             .name = "complex_combination",
             .content = content, // ownership transferred to results, will need deep free logic or just leak for this short-lived process
             .map = map_json,
@@ -68,7 +74,7 @@ pub fn main() !void {
         }
         const map_json = try map_obj.toJSON(allocator);
 
-        try results.append(.{
+        try results.append(allocator, .{
             .name = "multiple_edits",
             .content = content,
             .map = map_json,
@@ -76,24 +82,25 @@ pub fn main() !void {
     }
 
     // 输出到 stdout (JSON)
-    const stdout = std.io.getStdOut().writer();
+    const stdout_file = std.fs.File.stdout();
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_writer = stdout_file.writer(&stdout_buffer);
+    const stdout = &stdout_writer.interface;
     try stdout.writeAll("[\n");
     for (results.items, 0..) |res, i| {
         if (i > 0) try stdout.writeAll(",\n");
         try stdout.print("  {{\n    \"name\": \"{s}\",\n", .{res.name});
         try stdout.writeAll("    \"content\": ");
-        try std.json.encodeJsonString(res.content, .{}, stdout);
+        try writeJsonValue(stdout, res.content);
         try stdout.writeAll(",\n    \"map\": ");
         // map 已经是 JSON 字符串，但我们需要将其作为字符串值嵌入，所以再次 encode
-        // 或者我们可以直接解析它并嵌入对象，但这在 Zig 中比较麻烦。
-        // 简单起见，我们把 map 作为字符串传递，在 JS 端 JSON.parse
-        // 不，为了直接比较，我们应该让 map 也是对象。
-        // 但这需要解析 map_json。
-        // 让我们保持 map 为字符串，JS 端再 parse。
-        try std.json.encodeJsonString(res.map, .{}, stdout);
+        try writeJsonValue(stdout, res.map);
         try stdout.writeAll("\n  }");
     }
     try stdout.writeAll("\n]\n");
+
+    // Flush the output buffer
+    try stdout.flush();
 
     // 清理内存
     for (results.items) |res| {

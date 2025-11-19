@@ -255,7 +255,7 @@ test "Source Map: 基础生成" {
         allocator.destroy(map);
     }
 
-    try testing.expectEqual(@as(u32, 3), map.version);
+    try testing.expectEqual(@as(u8, 3), map.version);
     try testing.expectEqual(@as(usize, 1), map.sources.len);
 }
 
@@ -277,7 +277,7 @@ test "Source Map: overwrite 操作" {
         allocator.destroy(map);
     }
 
-    try testing.expectEqual(@as(u32, 3), map.version);
+    try testing.expectEqual(@as(u8, 3), map.version);
     try testing.expect(map.mappings.len > 0);
 }
 
@@ -299,7 +299,7 @@ test "Source Map: appendLeft 操作" {
         allocator.destroy(map);
     }
 
-    try testing.expectEqual(@as(u32, 3), map.version);
+    try testing.expectEqual(@as(u8, 3), map.version);
 }
 
 test "Source Map: 复杂操作组合" {
@@ -322,5 +322,5 @@ test "Source Map: 复杂操作组合" {
         allocator.destroy(map);
     }
 
-    try testing.expectEqual(@as(u32, 3), map.version);
+    try testing.expectEqual(@as(u8, 3), map.version);
 }

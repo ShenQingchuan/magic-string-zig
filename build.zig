@@ -14,9 +14,11 @@ pub fn build(b: *std.Build) void {
     // 添加性能基准测试
     const bench = b.addExecutable(.{
         .name = "bench",
-        .root_source_file = b.path("bench/benchmark.zig"),
-        .target = target,
-        .optimize = .ReleaseFast, // 基准测试使用最优化
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bench/benchmark.zig"),
+            .target = target,
+            .optimize = .ReleaseFast, // 基准测试使用最优化
+        }),
     });
     bench.linkLibC();
     bench.root_module.addImport("magic_string", magic_string_module);
@@ -27,9 +29,11 @@ pub fn build(b: *std.Build) void {
 
     // 添加单元测试
     const tests = b.addTest(.{
-        .root_source_file = b.path("tests/unit_test.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/unit_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
     tests.root_module.addImport("magic_string", magic_string_module);
     const run_tests = b.addRunArtifact(tests);
@@ -39,9 +43,11 @@ pub fn build(b: *std.Build) void {
     // 添加快照生成工具
     const snapshot_tool = b.addExecutable(.{
         .name = "snapshot-gen",
-        .root_source_file = b.path("tests/snapshot_test.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/snapshot_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
     snapshot_tool.root_module.addImport("magic_string", magic_string_module);
     b.installArtifact(snapshot_tool);

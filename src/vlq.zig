@@ -61,8 +61,8 @@ pub fn encodeVLQ(allocator: std.mem.Allocator, value: i32) ![]const u8 {
     // 计算需要的字符数（最多 6 个字符可以表示 32 位整数）
     // 每个字符 5 位，32 位需要 ceil(32/5) = 7 个字符
     // 但实际上我们限制在 32 位整数范围内
-    var result = std.ArrayList(u8).init(allocator);
-    errdefer result.deinit();
+    var result: std.ArrayList(u8) = .empty;
+    errdefer result.deinit(allocator);
 
     // 步骤 2：循环编码，每次处理 5 位
     while (true) {
@@ -78,13 +78,13 @@ pub fn encodeVLQ(allocator: std.mem.Allocator, value: i32) ![]const u8 {
         }
 
         // 转换为 Base64 字符并追加
-        try result.append(BASE64_CHARS[@as(usize, @intCast(digit))]);
+        try result.append(allocator, BASE64_CHARS[@as(usize, @intCast(digit))]);
 
         // 如果没有剩余位，结束编码
         if (vlq == 0) break;
     }
 
-    return result.toOwnedSlice();
+    return result.toOwnedSlice(allocator);
 }
 
 /// 将多个整数批量编码为 VLQ Base64 字符串（直接连接）
@@ -105,8 +105,8 @@ pub fn encodeVLQ(allocator: std.mem.Allocator, value: i32) ![]const u8 {
 pub fn encodeVLQSegment(allocator: std.mem.Allocator, values: []const i32) ![]const u8 {
     if (values.len == 0) return try allocator.dupe(u8, "");
 
-    var result = std.ArrayList(u8).init(allocator);
-    errdefer result.deinit();
+    var result: std.ArrayList(u8) = .empty;
+    errdefer result.deinit(allocator);
 
     for (values) |value| {
         // 编码当前值
@@ -114,10 +114,10 @@ pub fn encodeVLQSegment(allocator: std.mem.Allocator, values: []const i32) ![]co
         defer allocator.free(encoded);
 
         // 直接追加编码结果（不添加分隔符）
-        try result.appendSlice(encoded);
+        try result.appendSlice(allocator, encoded);
     }
 
-    return result.toOwnedSlice();
+    return result.toOwnedSlice(allocator);
 }
 
 /// 解码单个 VLQ Base64 字符为 6 位值

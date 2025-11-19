@@ -1,0 +1,17 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`Consistency Check with Zig Implementation > output should match snapshot 1`] = `
+[
+  {
+    "content": "// Comment
+var answer = 1;",
+    "map": "{"version":3,"file":"output.js","sources":["input.js"],"sourcesContent":["var x = 1"],"names":[],"mappings":";AAAA,IAAI,MAAC"}",
+    "name": "complex_combination",
+  },
+  {
+    "content": "A345-+678",
+    "map": "{"version":3,"file":"output.js","sources":["input.js"],"sourcesContent":["1234567890"],"names":[],"mappings":"AAAA,CAAE,KAAG"}",
+    "name": "multiple_edits",
+  },
+]
+`;

@@ -115,12 +115,12 @@ pub const MagicString = struct {
         errdefer allocator.free(original);
 
         // 创建 Segments 数组
-        var segments = std.ArrayList(Segment).init(allocator);
-        errdefer segments.deinit();
+        var segments: std.ArrayList(Segment) = .empty;
+        errdefer segments.deinit(allocator);
 
         // 初始时整个字符串作为一个 Segment
         if (source.len > 0) {
-            try segments.append(Segment.fromSource(original, 0));
+            try segments.append(allocator, Segment.fromSource(original, 0));
         }
 
         self.* = MagicString{
@@ -145,7 +145,7 @@ pub const MagicString = struct {
             self.allocator.free(offsets);
         }
 
-        self.segments.deinit();
+        self.segments.deinit(self.allocator);
         self.allocator.free(self.original);
         self.allocator.destroy(self);
     }
@@ -223,19 +223,23 @@ pub const MagicString = struct {
             total_len += segment.length();
         }
 
-        // 分配缓冲区
-        const buffer = try self.allocator.alloc(u8, total_len);
-        errdefer self.allocator.free(buffer);
+        // 使用 ArrayList 作为缓冲区
+        var buffer: std.ArrayList(u8) = .empty;
+        defer buffer.deinit(self.allocator);
+        try buffer.ensureTotalCapacity(self.allocator, total_len);
 
         // 写入内容
-        var fbs = std.io.fixedBufferStream(buffer);
-        const writer = fbs.writer();
-
         for (self.segments.items) |*segment| {
-            try segment.toString(writer);
+            if (segment.intro) |i| {
+                try buffer.appendSlice(self.allocator, i);
+            }
+            try buffer.appendSlice(self.allocator, segment.content);
+            if (segment.outro) |o| {
+                try buffer.appendSlice(self.allocator, o);
+            }
         }
 
-        return buffer;
+        return try buffer.toOwnedSlice(self.allocator);
     }
 
     /// appendLeft: 在指定索引的左侧插入内容
@@ -463,7 +467,7 @@ pub const MagicString = struct {
 
         // 替换原 Segment
         self.segments.items[seg_idx] = left_seg;
-        try self.segments.insert(seg_idx + 1, right_seg);
+        try self.segments.insert(self.allocator, seg_idx + 1, right_seg);
 
         // 注意：原 segment 的 intro/outro 已转移，无需释放
         // 只需要将原 segment 的指针置空（但实际上已被覆盖）
@@ -574,7 +578,7 @@ pub const MagicString = struct {
 
         // 替换
         const count = end_idx - start_idx + 1;
-        try self.segments.replaceRange(start_idx, count, &[_]Segment{new_seg});
+        try self.segments.replaceRange(self.allocator, start_idx, count, &[_]Segment{new_seg});
 
         self.invalidateCache();
     }

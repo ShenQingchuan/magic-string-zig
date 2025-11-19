@@ -3,6 +3,12 @@ const vlq = @import("vlq.zig");
 const MagicString = @import("magic_string.zig").MagicString;
 const Segment = @import("magic_string.zig").Segment;
 
+// Helper function to write JSON value using std.json.fmt
+fn writeJsonValue(writer: anytype, value: anytype) !void {
+    const formatter = std.json.fmt(value, .{ .whitespace = .minified });
+    try formatter.format(writer);
+}
+
 /// Source Map v3 生成器配置选项
 pub const SourceMapOptions = struct {
     /// 生成代码的文件名（可选）
@@ -79,10 +85,13 @@ pub const SourceMap = struct {
     ///
     /// 返回符合 Source Map v3 规范的 JSON 字符串
     pub fn toJSON(self: *const SourceMap, allocator: std.mem.Allocator) ![]const u8 {
-        var output = std.ArrayList(u8).init(allocator);
-        errdefer output.deinit();
+        var output: std.ArrayList(u8) = .empty;
+        errdefer output.deinit(allocator);
 
-        const writer = output.writer();
+        // ArrayList.writer() 返回旧的 Writer，需要适配到新 API
+        var old_writer = output.writer(allocator);
+        var adapter = old_writer.adaptToNewApi(&.{});
+        const writer = &adapter.new_interface;
 
         // 开始 JSON 对象
         try writer.writeAll("{");
@@ -93,20 +102,20 @@ pub const SourceMap = struct {
         // file (可选)
         if (self.file) |file| {
             try writer.writeAll(",\"file\":");
-            try std.json.encodeJsonString(file, .{}, writer);
+            try writeJsonValue(writer, file);
         }
 
         // sourceRoot (可选)
         if (self.source_root) |root| {
             try writer.writeAll(",\"sourceRoot\":");
-            try std.json.encodeJsonString(root, .{}, writer);
+            try writeJsonValue(writer, root);
         }
 
         // sources (必需)
         try writer.writeAll(",\"sources\":[");
         for (self.sources, 0..) |source, i| {
             if (i > 0) try writer.writeAll(",");
-            try std.json.encodeJsonString(source, .{}, writer);
+            try writeJsonValue(writer, source);
         }
         try writer.writeAll("]");
 
@@ -116,7 +125,7 @@ pub const SourceMap = struct {
             for (content, 0..) |item, i| {
                 if (i > 0) try writer.writeAll(",");
                 if (item) |s| {
-                    try std.json.encodeJsonString(s, .{}, writer);
+                    try writeJsonValue(writer, s);
                 } else {
                     try writer.writeAll("null");
                 }
@@ -128,18 +137,21 @@ pub const SourceMap = struct {
         try writer.writeAll(",\"names\":[");
         for (self.names, 0..) |name, i| {
             if (i > 0) try writer.writeAll(",");
-            try std.json.encodeJsonString(name, .{}, writer);
+            try writeJsonValue(writer, name);
         }
         try writer.writeAll("]");
 
         // mappings (必需)
         try writer.writeAll(",\"mappings\":");
-        try std.json.encodeJsonString(self.mappings, .{}, writer);
+        try writeJsonValue(writer, self.mappings);
 
         // 结束 JSON 对象
         try writer.writeAll("}");
 
-        return output.toOwnedSlice();
+        // 刷新缓冲区
+        try writer.flush();
+
+        return output.toOwnedSlice(allocator);
     }
 };
 
@@ -228,8 +240,8 @@ pub const SourceMapGenerator = struct {
     /// 4. 源代码的列偏移（相对于上一段）
     /// 5. 名称索引（可选，我们暂不使用）
     fn generateMappings(self: *SourceMapGenerator) ![]const u8 {
-        var result = std.ArrayList(u8).init(self.allocator);
-        errdefer result.deinit();
+        var result: std.ArrayList(u8) = .empty;
+        errdefer result.deinit(self.allocator);
 
         // 跟踪上一个映射的位置（用于计算相对偏移）
         var prev_gen_column: i32 = 0;
@@ -251,11 +263,11 @@ pub const SourceMapGenerator = struct {
                     if (c == '\n') {
                         // 遇到换行符，添加行分隔符并重置
                         if (has_segment_in_line) {
-                            try result.append(';');
+                            try result.append(self.allocator, ';');
                             has_segment_in_line = false;
                         } else {
                             // 如果当前行没有 segment，也需要添加空行标记
-                            try result.append(';');
+                            try result.append(self.allocator, ';');
                         }
                         gen_line += 1;
                         gen_column = 0;
@@ -284,10 +296,10 @@ pub const SourceMapGenerator = struct {
 
                     // 添加逗号分隔符（除了当前行的第一个 segment）
                     if (has_segment_in_line) {
-                        try result.append(',');
+                        try result.append(self.allocator, ',');
                     }
 
-                    try result.appendSlice(encoded);
+                    try result.appendSlice(self.allocator, encoded);
                     has_segment_in_line = true;
 
                     // 更新上一个位置
@@ -301,10 +313,10 @@ pub const SourceMapGenerator = struct {
                         if (c == '\n') {
                             // 遇到换行符，添加行分隔符并重置
                             if (has_segment_in_line) {
-                                try result.append(';');
+                                try result.append(self.allocator, ';');
                                 has_segment_in_line = false;
                             } else {
-                                try result.append(';');
+                                try result.append(self.allocator, ';');
                             }
                             gen_line += 1;
                             gen_column = 0;
@@ -333,10 +345,10 @@ pub const SourceMapGenerator = struct {
 
                     // 添加逗号分隔符
                     if (has_segment_in_line) {
-                        try result.append(',');
+                        try result.append(self.allocator, ',');
                     }
 
-                    try result.appendSlice(encoded);
+                    try result.appendSlice(self.allocator, encoded);
                     has_segment_in_line = true;
 
                     // 更新上一个位置（但不更新 gen_column，因为这是插入的内容）
@@ -350,10 +362,10 @@ pub const SourceMapGenerator = struct {
                 for (segment.content) |c| {
                     if (c == '\n') {
                         if (has_segment_in_line) {
-                            try result.append(';');
+                            try result.append(self.allocator, ';');
                             has_segment_in_line = false;
                         } else {
-                            try result.append(';');
+                            try result.append(self.allocator, ';');
                         }
                         gen_line += 1;
                         gen_column = 0;
@@ -370,10 +382,10 @@ pub const SourceMapGenerator = struct {
                 for (outro) |c| {
                     if (c == '\n') {
                         if (has_segment_in_line) {
-                            try result.append(';');
+                            try result.append(self.allocator, ';');
                             has_segment_in_line = false;
                         } else {
-                            try result.append(';');
+                            try result.append(self.allocator, ';');
                         }
                         gen_line += 1;
                         gen_column = 0;
@@ -385,7 +397,7 @@ pub const SourceMapGenerator = struct {
             }
         }
 
-        return result.toOwnedSlice();
+        return result.toOwnedSlice(self.allocator);
     }
 };
 

@@ -26,6 +26,10 @@ describe('Consistency Check with Zig Implementation', () => {
     zigResults = JSON.parse(output);
   });
 
+  it('output should match snapshot', () => {
+    expect(zigResults).toMatchSnapshot();
+  });
+
   it('should match "complex_combination" scenario', () => {
     const zigResult = zigResults.find(r => r.name === 'complex_combination');
     if (!zigResult) throw new Error('Scenario "complex_combination" not found in Zig output');
