@@ -243,7 +243,7 @@ pub const SourceMapGenerator = struct {
         var has_segment_in_line = false; // 跟踪当前行是否已经有 segment
 
         // 遍历所有 Segment
-        for (self.magic_string.segments.items, 0..) |*segment, i| {
+        for (self.magic_string.segments.items) |*segment| {
             // 处理 intro（插入在左侧的内容）
             if (segment.intro) |intro| {
                 // 检查 intro 中是否有换行符
@@ -316,39 +316,34 @@ pub const SourceMapGenerator = struct {
                 }
             } else {
                 // 这是插入的内容（overwrite 替换的内容）
-                // magic-string 会为被替换范围的开始位置生成一个映射
-                // 检查前一个 segment 是否有 source_offset，如果有，说明这是替换的开始
-                if (i > 0) {
-                    const prev_seg = &self.magic_string.segments.items[i - 1];
-                    if (prev_seg.source_offset) |prev_offset| {
-                        // 为替换的开始位置生成映射，指向前一个 segment 结束后的原始位置
-                        const replaced_source_pos = prev_offset + prev_seg.content.len;
+                // 如果它覆盖了原始内容（即是替换操作），且有内容输出，需要生成映射
+                if (segment.original_end > segment.original_start and segment.content.len > 0) {
+                    const replaced_source_pos = segment.original_start;
 
-                        // 计算相对偏移
-                        const gen_col_delta = @as(i32, @intCast(gen_column)) - prev_gen_column;
-                        const source_index_delta = 0 - prev_source_index;
-                        const source_line_delta = 0 - prev_source_line;
-                        const source_col_delta = @as(i32, @intCast(replaced_source_pos)) - prev_source_column;
+                    // 计算相对偏移
+                    const gen_col_delta = @as(i32, @intCast(gen_column)) - prev_gen_column;
+                    const source_index_delta = 0 - prev_source_index;
+                    const source_line_delta = 0 - prev_source_line;
+                    const source_col_delta = @as(i32, @intCast(replaced_source_pos)) - prev_source_column;
 
-                        // 编码 VLQ segment
-                        const fields = [4]i32{ gen_col_delta, source_index_delta, source_line_delta, source_col_delta };
-                        const encoded = try vlq.encodeVLQSegment(self.allocator, &fields);
-                        defer self.allocator.free(encoded);
+                    // 编码 VLQ segment
+                    const fields = [4]i32{ gen_col_delta, source_index_delta, source_line_delta, source_col_delta };
+                    const encoded = try vlq.encodeVLQSegment(self.allocator, &fields);
+                    defer self.allocator.free(encoded);
 
-                        // 添加逗号分隔符
-                        if (has_segment_in_line) {
-                            try result.append(',');
-                        }
-
-                        try result.appendSlice(encoded);
-                        has_segment_in_line = true;
-
-                        // 更新上一个位置（但不更新 gen_column，因为这是插入的内容）
-                        prev_gen_column = @as(i32, @intCast(gen_column));
-                        prev_source_index = 0;
-                        prev_source_line = 0;
-                        prev_source_column = @as(i32, @intCast(replaced_source_pos));
+                    // 添加逗号分隔符
+                    if (has_segment_in_line) {
+                        try result.append(',');
                     }
+
+                    try result.appendSlice(encoded);
+                    has_segment_in_line = true;
+
+                    // 更新上一个位置（但不更新 gen_column，因为这是插入的内容）
+                    prev_gen_column = @as(i32, @intCast(gen_column));
+                    prev_source_index = 0;
+                    prev_source_line = 0;
+                    prev_source_column = @as(i32, @intCast(replaced_source_pos));
                 }
 
                 // 检查插入内容中是否有换行符

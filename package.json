@@ -3,10 +3,13 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "test": "pnpm run test:unit && pnpm run test:consistency",
+    "test:unit": "zig build test --summary all",
+    "test:consistency": "vitest --run",
     "prepare": "simple-git-hooks"
   },
   "simple-git-hooks": {
-    "pre-commit": "zig test src/unit_test.zig"
+    "pre-commit": "pnpm run test"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",

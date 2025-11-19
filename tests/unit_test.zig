@@ -1,6 +1,6 @@
 const std = @import("std");
 const testing = std.testing;
-const MagicString = @import("magic_string.zig").MagicString;
+const MagicString = @import("magic_string").MagicString;
 
 test "基础功能: 初始化和 toString" {
     const allocator = testing.allocator;
