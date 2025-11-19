@@ -4,42 +4,37 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const target_result = target.result;
-
-    const os_name = switch (target_result.os.tag) {
-        .macos => "darwin",
-        .windows => "win32",
-        .linux => "linux",
-        else => @tagName(target_result.os.tag),
-    };
-
-    const arch_name = switch (target_result.cpu.arch) {
-        .aarch64 => "arm64",
-        .x86_64 => "x64",
-        else => @tagName(target_result.cpu.arch),
-    };
-
-    // 基础库名
-    const lib_name = b.fmt("magic-string.{s}-{s}", .{ os_name, arch_name });
-
-    const lib = b.addSharedLibrary(.{
-        .name = lib_name,
-        .root_source_file = b.path("src/root.zig"),
+    // 创建 magic-string 库模块
+    const magic_string_module = b.addModule("magic_string", .{
+        .root_source_file = b.path("src/magic_string.zig"),
         .target = target,
         .optimize = optimize,
     });
 
-    const dep_napi = b.dependency("napi", .{});
-    lib.root_module.addImport("napi", dep_napi.module("napi"));
+    // 添加单元测试
+    const tests = b.addTest(.{
+        .root_source_file = b.path("src/unit_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
 
-    lib.linker_allow_shlib_undefined = true;
+    const run_tests = b.addRunArtifact(tests);
+    const test_step = b.step("test", "运行所有单元测试");
+    test_step.dependOn(&run_tests.step);
 
-    // 最终文件名：magic-string.darwin-arm64.node
-    const node_filename = b.fmt("{s}.node", .{lib_name});
+    // 添加性能基准测试
+    const bench = b.addExecutable(.{
+        .name = "bench",
+        .root_source_file = b.path("bench/benchmark.zig"),
+        .target = target,
+        .optimize = .ReleaseFast, // 基准测试使用最优化
+    });
+    bench.linkLibC();
+    bench.root_module.addImport("magic_string", magic_string_module);
 
-    // 直接安装改名后的文件到 zig-out/lib
-    // 这样只会生成 .node 文件，不会保留 .dylib/.so
-    const install_node = b.addInstallFile(lib.getEmittedBin(), b.pathJoin(&.{ "lib", node_filename }));
+    b.installArtifact(bench);
 
-    b.getInstallStep().dependOn(&install_node.step);
+    const run_bench = b.addRunArtifact(bench);
+    const bench_step = b.step("bench", "运行性能基准测试");
+    bench_step.dependOn(&run_bench.step);
 }

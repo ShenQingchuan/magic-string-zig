@@ -176,6 +176,10 @@ pub const SourceMapGenerator = struct {
         const source_name = self.options.source orelse "";
         const sources = try self.allocator.alloc([]const u8, 1);
         sources[0] = try self.allocator.dupe(u8, source_name);
+        errdefer {
+            for (sources) |s| self.allocator.free(s);
+            self.allocator.free(sources);
+        }
 
         // 准备源文件内容（如果需要）
         const sources_content = if (self.options.include_content) blk: {
@@ -183,9 +187,16 @@ pub const SourceMapGenerator = struct {
             content[0] = try self.allocator.dupe(u8, self.magic_string.original);
             break :blk content;
         } else null;
+        errdefer if (sources_content) |content| {
+            for (content) |item| {
+                if (item) |s| self.allocator.free(s);
+            }
+            self.allocator.free(content);
+        };
 
         // 生成 mappings 字符串
         const mappings = try self.generateMappings();
+        errdefer self.allocator.free(mappings);
 
         // 创建 Source Map 对象
         const map = try self.allocator.create(SourceMap);

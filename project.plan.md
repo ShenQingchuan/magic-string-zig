@@ -58,49 +58,8 @@
     - **对比测试**：与原版 magic-string 的 Source Map 输出完全一致
     - 完整的测试覆盖（27 个测试全部通过，包括 6 个对比测试）
 
-## Phase 5: JS 侧优化 ⏳
-- [ ] **Task 5.1**: 创建 JS Class 包装器
-    - 创建 `index.ts` 封装函数式 API
-    - 提供优雅的 `new MagicString(source)` 接口
-    - 使用 `FinalizationRegistry` 自动内存管理
-- [ ] **Task 5.2**: 迁移测试到 Vitest
-    - 更新 `playground/magic-string.test.ts` 使用新的类
-    - 验证所有测试通过
-
 ---
 
 ## 性能基准测试计划 (Benchmark)
 
-### 1. Vitest Benchmark
-- 基于 Tinybench，与现有测试框架集成
-- 提供统计指标：mean, min, max, hz (ops/sec), p50, p75, p99
-- 支持导出 JSON 并对比：`--outputJson`, `--compare`
-- 运行：`pnpm vitest bench`
-
-```typescript
-import { bench } from 'vitest'
-
-bench('Zig appendLeft', () => {
-  const ms = addon.createMagicString('x'.repeat(1000))
-  addon.appendLeft(ms, 0, 'prefix')
-  addon.destroy(ms)
-}, { time: 1000 })
-```
-
-### 2. Benchmark 结果与反思
-
-#### 测试结果
-- **创建实例**：JS 快 ~16x
-- **appendLeft/Right**：JS 快 ~50x
-- **toString**：JS 快 ~400x (由于缓存机制)
-
-#### 原因分析
-1. **N-API 开销**：对于 `magic-string` 这种细粒度 API（频繁的小操作），每次调用跨语言边界的开销（参数转换、上下文切换）远大于操作本身的计算量。
-2. **数据传输**：字符串在 JS 和 Zig 之间传递需要复制和编码转换。
-3. **V8 优化**：JS 引擎对字符串拼接和对象分配有极高的优化。
-
-#### 架构反思
-Native 模块在 Node.js 中的最佳实践并非"逐个函数移植"，而是：
-- **批量处理**：将多次操作合并为一次 Native 调用。
-- **计算密集**：仅在计算量（如 Parsers, Image Processing, Source Map 生成）远大于数据传输开销时使用。
-- **延迟执行**：JS 端记录操作指令（Op Log），仅在 `toString()` 或 `generateMap()` 时一次性传给 Native 执行。
+采用 hyperfine 对比 JS Magic String 和本项目 Zig 实现的性能。

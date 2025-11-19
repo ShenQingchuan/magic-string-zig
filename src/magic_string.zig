@@ -81,7 +81,10 @@ pub const Segment = struct {
     /// 释放 Segment 拥有的资源
     pub fn deinit(self: *Segment, allocator: std.mem.Allocator) void {
         // content 可能是原始字符串的切片或独立分配的，需要根据 source_offset 判断
-        // 但实际上我们统一在 MagicString 层面管理内存
+        // 如果 source_offset 为 null，说明是插入的内容，需要释放
+        if (self.source_offset == null) {
+            allocator.free(self.content);
+        }
         if (self.intro) |i| allocator.free(i);
         if (self.outro) |o| allocator.free(o);
     }
