@@ -15,6 +15,8 @@ const addonPath = join(__dirname, `../zig-out/lib/magic-string.${platform}-${arc
 interface MagicStringAddon {
   createMagicString(source: string): number;
   toString(handle: number): string;
+  appendLeft(handle: number, index: number, content: string): void;
+  appendRight(handle: number, index: number, content: string): void;
   destroy(handle: number): void;
 }
 
@@ -60,6 +62,81 @@ describe('MagicString - Phase 1: 基础功能', () => {
     
     const result = addon.toString(handle);
     expect(result).toBe(longStr);
+  });
+});
+
+describe('MagicString - Phase 2: appendLeft/appendRight', () => {
+  const handles: number[] = [];
+
+  afterEach(() => {
+    handles.forEach(h => addon.destroy(h));
+    handles.length = 0;
+  });
+
+  it('应该在开头 appendLeft', () => {
+    const handle = addon.createMagicString("world");
+    handles.push(handle);
+    
+    addon.appendLeft(handle, 0, "Hello ");
+    const result = addon.toString(handle);
+    expect(result).toBe("Hello world");
+  });
+
+  it('应该在末尾 appendRight', () => {
+    const handle = addon.createMagicString("Hello");
+    handles.push(handle);
+    
+    addon.appendRight(handle, 5, " world");
+    const result = addon.toString(handle);
+    expect(result).toBe("Hello world");
+  });
+
+  it('应该在中间 appendLeft', () => {
+    const handle = addon.createMagicString("ac");
+    handles.push(handle);
+    
+    addon.appendLeft(handle, 1, "b");
+    const result = addon.toString(handle);
+    expect(result).toBe("abc");
+  });
+
+  it('应该在中间 appendRight', () => {
+    const handle = addon.createMagicString("ac");
+    handles.push(handle);
+    
+    addon.appendRight(handle, 1, "b");
+    const result = addon.toString(handle);
+    expect(result).toBe("abc");
+  });
+
+  it('应该支持多次 appendLeft', () => {
+    const handle = addon.createMagicString("world");
+    handles.push(handle);
+    
+    addon.appendLeft(handle, 0, "Hello ");
+    addon.appendLeft(handle, 0, ">>> ");
+    const result = addon.toString(handle);
+    expect(result).toBe(">>> Hello world");
+  });
+
+  it('应该支持多次 appendRight', () => {
+    const handle = addon.createMagicString("Hello");
+    handles.push(handle);
+    
+    addon.appendRight(handle, 5, " world");
+    addon.appendRight(handle, 5, " <<<");
+    const result = addon.toString(handle);
+    expect(result).toBe("Hello <<< world");
+  });
+
+  it('应该支持混合使用 appendLeft 和 appendRight', () => {
+    const handle = addon.createMagicString("var x = 1");
+    handles.push(handle);
+    
+    addon.appendLeft(handle, 0, "// Comment\n");
+    addon.appendRight(handle, 9, ";");
+    const result = addon.toString(handle);
+    expect(result).toBe("// Comment\nvar x = 1;");
   });
 });
 

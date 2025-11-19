@@ -1,0 +1,21 @@
+{
+  "name": "magic-string-zig",
+  "version": "0.0.1",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build": "zig build",
+    "prepare": "simple-git-hooks"
+  },
+  "simple-git-hooks": {
+    "pre-commit": "pnpm test"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "simple-git-hooks": "^2.13.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.10"
+  }
+}

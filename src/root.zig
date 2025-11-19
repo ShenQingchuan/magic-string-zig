@@ -45,9 +45,49 @@ fn destroyMagicString(env: napi.Env, handle: napi.Value) !napi.Value {
     return try env.create(void, {});
 }
 
+/// appendLeft: 在指定索引左侧插入内容
+/// JS: appendLeft(handle, index, content)
+fn magicStringAppendLeft(env: napi.Env, handle: napi.Value, index_val: napi.Value, content_val: napi.Value) !napi.Value {
+    const ptr_as_f64 = try handle.getValue(f64);
+    const ptr_value: usize = @intFromFloat(ptr_as_f64);
+    const ms: *MagicString = @ptrFromInt(ptr_value);
+
+    const index = try index_val.getValue(f64);
+    const index_usize: usize = @intFromFloat(index);
+
+    var buf: [4096]u8 = undefined;
+    const len = try content_val.getValueString(.utf8, &buf);
+    const content = buf[0..len];
+
+    try ms.appendLeft(index_usize, content);
+
+    return try env.create(void, {});
+}
+
+/// appendRight: 在指定索引右侧插入内容
+/// JS: appendRight(handle, index, content)
+fn magicStringAppendRight(env: napi.Env, handle: napi.Value, index_val: napi.Value, content_val: napi.Value) !napi.Value {
+    const ptr_as_f64 = try handle.getValue(f64);
+    const ptr_value: usize = @intFromFloat(ptr_as_f64);
+    const ms: *MagicString = @ptrFromInt(ptr_value);
+
+    const index = try index_val.getValue(f64);
+    const index_usize: usize = @intFromFloat(index);
+
+    var buf: [4096]u8 = undefined;
+    const len = try content_val.getValueString(.utf8, &buf);
+    const content = buf[0..len];
+
+    try ms.appendRight(index_usize, content);
+
+    return try env.create(void, {});
+}
+
 fn init(env: napi.Env, exports: napi.Value) !napi.Value {
     try exports.setNamedProperty("createMagicString", try env.createFunction(createMagicString, "createMagicString"));
     try exports.setNamedProperty("toString", try env.createFunction(magicStringToString, "toString"));
+    try exports.setNamedProperty("appendLeft", try env.createFunction(magicStringAppendLeft, "appendLeft"));
+    try exports.setNamedProperty("appendRight", try env.createFunction(magicStringAppendRight, "appendRight"));
     try exports.setNamedProperty("destroy", try env.createFunction(destroyMagicString, "destroy"));
     return exports;
 }

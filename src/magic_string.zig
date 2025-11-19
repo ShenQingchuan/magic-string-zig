@@ -157,8 +157,21 @@ pub const MagicString = struct {
         const offsets = try self.getOffsets();
 
         if (self.segments.items.len == 0) return error.EmptyString;
-        if (target_offset >= offsets[offsets.len - 1] + self.segments.items[self.segments.items.len - 1].length()) {
+
+        // 计算总长度（包含所有 Segment 的实际输出长度）
+        var total_len: usize = 0;
+        for (self.segments.items) |*seg| {
+            total_len += seg.length();
+        }
+
+        // 允许 target_offset == total_len（在末尾追加）
+        if (target_offset > total_len) {
             return error.OffsetOutOfBounds;
+        }
+
+        // 特殊情况：在末尾追加，返回最后一个 Segment
+        if (target_offset == total_len) {
+            return self.segments.items.len - 1;
         }
 
         var left: usize = 0;
@@ -197,5 +210,139 @@ pub const MagicString = struct {
         }
 
         return buffer;
+    }
+
+    /// appendLeft: 在指定索引的左侧插入内容
+    /// 如果该位置随后被移动（范围结束于此），插入的内容会跟随移动
+    pub fn appendLeft(self: *MagicString, index: usize, content: []const u8) !void {
+        if (content.len == 0) return;
+
+        // 找到包含该索引的 Segment
+        const seg_idx = try self.findSegmentIndex(index);
+        const offsets = try self.getOffsets();
+        const seg_start = offsets[seg_idx];
+
+        // 计算在该 Segment 内的相对位置
+        const relative_pos = index - seg_start;
+
+        // 需要分配新的内容
+        const new_content = try self.allocator.dupe(u8, content);
+        errdefer self.allocator.free(new_content);
+
+        // 如果 index 正好在 Segment 开头，添加到 intro
+        if (relative_pos == 0) {
+            var segment = &self.segments.items[seg_idx];
+            if (segment.intro) |existing_intro| {
+                // 新内容在前，现有内容在后
+                const combined = try self.allocator.alloc(u8, new_content.len + existing_intro.len);
+                @memcpy(combined[0..new_content.len], new_content);
+                @memcpy(combined[new_content.len..], existing_intro);
+                self.allocator.free(existing_intro);
+                self.allocator.free(new_content);
+                segment.intro = combined;
+            } else {
+                segment.intro = new_content;
+            }
+        } else {
+            // 需要分裂 Segment，在分裂点左侧插入
+            try self.splitSegment(seg_idx, relative_pos);
+            // 分裂后，新的 Segment 在 seg_idx + 1 位置
+            // 将内容添加到右侧 Segment 的 intro
+            var segment = &self.segments.items[seg_idx + 1];
+            if (segment.intro) |existing_intro| {
+                const combined = try self.allocator.alloc(u8, new_content.len + existing_intro.len);
+                @memcpy(combined[0..new_content.len], new_content);
+                @memcpy(combined[new_content.len..], existing_intro);
+                self.allocator.free(existing_intro);
+                self.allocator.free(new_content);
+                segment.intro = combined;
+            } else {
+                segment.intro = new_content;
+            }
+        }
+
+        self.invalidateCache();
+    }
+
+    /// appendRight: 在指定索引的右侧插入内容
+    /// 如果该位置随后被移动（范围开始于此），插入的内容会跟随移动
+    pub fn appendRight(self: *MagicString, index: usize, content: []const u8) !void {
+        if (content.len == 0) return;
+
+        const seg_idx = try self.findSegmentIndex(index);
+        const offsets = try self.getOffsets();
+        const seg_start = offsets[seg_idx];
+        const relative_pos = index - seg_start;
+
+        const new_content = try self.allocator.dupe(u8, content);
+        errdefer self.allocator.free(new_content);
+
+        // 如果 index 正好在 Segment 开头，添加到 outro
+        if (relative_pos == 0) {
+            var segment = &self.segments.items[seg_idx];
+            if (segment.outro) |existing_outro| {
+                // 在现有 outro 之前插入
+                const combined = try self.allocator.alloc(u8, new_content.len + existing_outro.len);
+                @memcpy(combined[0..new_content.len], new_content);
+                @memcpy(combined[new_content.len..], existing_outro);
+                self.allocator.free(existing_outro);
+                self.allocator.free(new_content);
+                segment.outro = combined;
+            } else {
+                segment.outro = new_content;
+            }
+        } else {
+            // 需要分裂 Segment，在分裂点右侧插入
+            try self.splitSegment(seg_idx, relative_pos);
+            // 将内容添加到左侧 Segment 的 outro
+            var segment = &self.segments.items[seg_idx];
+            if (segment.outro) |existing_outro| {
+                const combined = try self.allocator.alloc(u8, new_content.len + existing_outro.len);
+                @memcpy(combined[0..new_content.len], new_content);
+                @memcpy(combined[new_content.len..], existing_outro);
+                self.allocator.free(existing_outro);
+                self.allocator.free(new_content);
+                segment.outro = combined;
+            } else {
+                segment.outro = new_content;
+            }
+        }
+
+        self.invalidateCache();
+    }
+
+    /// 分裂 Segment：在指定位置将一个 Segment 分为两个
+    /// split_pos 是相对于该 Segment 内容开头的偏移
+    fn splitSegment(self: *MagicString, seg_idx: usize, split_pos: usize) !void {
+        const segment = &self.segments.items[seg_idx];
+
+        if (split_pos == 0 or split_pos >= segment.content.len) {
+            return; // 无需分裂
+        }
+
+        // 创建两个新的 Segment
+        const left_content = segment.content[0..split_pos];
+        const right_content = segment.content[split_pos..];
+
+        const left_seg = Segment{
+            .content = left_content,
+            .source_offset = segment.source_offset,
+            .intro = segment.intro,
+            .outro = null,
+        };
+
+        const right_seg = Segment{
+            .content = right_content,
+            .source_offset = if (segment.source_offset) |offset| offset + split_pos else null,
+            .intro = null,
+            .outro = segment.outro,
+        };
+
+        // 替换原 Segment
+        self.segments.items[seg_idx] = left_seg;
+        try self.segments.insert(seg_idx + 1, right_seg);
+
+        // 注意：原 segment 的 intro/outro 已转移，无需释放
+        // 只需要将原 segment 的指针置空（但实际上已被覆盖）
     }
 };
