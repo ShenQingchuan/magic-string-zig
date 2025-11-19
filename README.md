@@ -4,10 +4,12 @@
 
 **用于字符串操作和 Source Map 生成的高性能 Zig 工具库**
 
-[![Zig Version](https://img.shields.io/badge/zig-0.14.0%2B-blue)](https://ziglang.org/)
+[![Zig Version](https://img.shields.io/badge/zig-0.14.0-blue)](https://ziglang.org/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 </div>
+
+> ⚠️ **警告：** 当前实现与 Zig 0.15.0 不兼容，未来预期会升级。（等各位 AI 师傅们学会后再迁移）
 
 ## 📖 简介
 
