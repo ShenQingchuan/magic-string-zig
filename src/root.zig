@@ -83,11 +83,34 @@ fn magicStringAppendRight(env: napi.Env, handle: napi.Value, index_val: napi.Val
     return try env.create(void, {});
 }
 
+/// overwrite: 用新内容替换指定范围
+/// JS: overwrite(handle, start, end, content)
+fn magicStringOverwrite(env: napi.Env, handle: napi.Value, start_val: napi.Value, end_val: napi.Value, content_val: napi.Value) !napi.Value {
+    const ptr_as_f64 = try handle.getValue(f64);
+    const ptr_value: usize = @intFromFloat(ptr_as_f64);
+    const ms: *MagicString = @ptrFromInt(ptr_value);
+
+    const start = try start_val.getValue(f64);
+    const start_usize: usize = @intFromFloat(start);
+
+    const end = try end_val.getValue(f64);
+    const end_usize: usize = @intFromFloat(end);
+
+    var buf: [4096]u8 = undefined;
+    const len = try content_val.getValueString(.utf8, &buf);
+    const content = buf[0..len];
+
+    try ms.overwrite(start_usize, end_usize, content);
+
+    return try env.create(void, {});
+}
+
 fn init(env: napi.Env, exports: napi.Value) !napi.Value {
     try exports.setNamedProperty("createMagicString", try env.createFunction(createMagicString, "createMagicString"));
     try exports.setNamedProperty("toString", try env.createFunction(magicStringToString, "toString"));
     try exports.setNamedProperty("appendLeft", try env.createFunction(magicStringAppendLeft, "appendLeft"));
     try exports.setNamedProperty("appendRight", try env.createFunction(magicStringAppendRight, "appendRight"));
+    try exports.setNamedProperty("overwrite", try env.createFunction(magicStringOverwrite, "overwrite"));
     try exports.setNamedProperty("destroy", try env.createFunction(destroyMagicString, "destroy"));
     return exports;
 }

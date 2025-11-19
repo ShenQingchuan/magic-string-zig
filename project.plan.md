@@ -24,13 +24,18 @@
     - `splitSegment()` - Segment 分裂逻辑
     - 完整的测试覆盖（11 个测试用例全部通过）
 
-## Phase 3: 复杂编辑 (Overwrite & Split)
-- [ ] **Task 3.1**: 实现 `byIndex` 查找 Chunk
-    - 根据字符索引快速定位对应的 Chunk
-- [ ] **Task 3.2**: 实现 `split` 操作
-    - 将一个 Chunk 从中间切分为两个
-- [ ] **Task 3.3**: 实现 `overwrite(start, end, content)`
-    - 涉及 Chunk 分裂和内容替换
+## Phase 3: 复杂编辑 (Overwrite & Split) ✅
+- [x] **Task 3.1**: 实现 `byIndex` 查找 Segment
+    - 根据原始字符串偏移定位对应的 Segment
+    - 使用 `findSegmentBySourceOffset` 方法
+- [x] **Task 3.2**: 实现 `split` 操作
+    - 将一个 Segment 从中间切分为两个
+    - `splitSegment` 方法已在 Phase 2 实现
+- [x] **Task 3.3**: 实现 `overwrite(start, end, content)`
+    - 基于原始字符串索引的范围替换
+    - 处理 Segment 分裂和内容替换
+    - 正确管理内存（释放被替换的 Segment）
+    - 完整的测试覆盖（7 个测试用例全部通过）
 
 ## Phase 4: Source Map 功能
 - [ ] **Task 4.1**: 实现 `generateMap()`
@@ -43,3 +48,33 @@
 - [x] **Task 5.2**: 迁移测试到 Vitest
     - 使用 Vitest 重写测试套件
     - 提供更好的测试体验和断言
+
+---
+
+## 性能基准测试计划 (Benchmark)
+
+### 1. Vitest Benchmark
+- 基于 Tinybench，与现有测试框架集成
+- 提供统计指标：mean, min, max, hz (ops/sec), p50, p75, p99
+- 支持导出 JSON 并对比：`--outputJson`, `--compare`
+- 运行：`pnpm vitest bench`
+
+```typescript
+import { bench } from 'vitest'
+
+bench('Zig appendLeft', () => {
+  const ms = addon.createMagicString('x'.repeat(1000))
+  addon.appendLeft(ms, 0, 'prefix')
+  addon.destroy(ms)
+}, { time: 1000 })
+```
+
+### 2. Hyperfine
+- 进程级基准测试，适合端到端场景
+- 支持预热、异常检测、多格式导出
+- 安装：`brew install hyperfine` (macOS)
+- 使用：`hyperfine 'node zig-test.js' 'node js-test.js'`
+
+### 测试方案
+- **Vitest Benchmark**：细粒度 API 性能对比
+- **Hyperfine**：真实场景端到端测试

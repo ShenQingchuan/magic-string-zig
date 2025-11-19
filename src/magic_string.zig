@@ -345,4 +345,98 @@ pub const MagicString = struct {
         // 注意：原 segment 的 intro/outro 已转移，无需释放
         // 只需要将原 segment 的指针置空（但实际上已被覆盖）
     }
+
+    /// overwrite: 用新内容替换指定范围的字符
+    /// start 和 end 是相对于 **原始字符串** 的索引
+    pub fn overwrite(self: *MagicString, start: usize, end: usize, content: []const u8) !void {
+        if (start >= end) return error.InvalidRange;
+
+        // 找到包含 start 和 end 位置的 Segment（基于 source_offset）
+        const start_seg_idx = self.findSegmentBySourceOffset(start);
+        const end_seg_idx = self.findSegmentBySourceOffset(if (end > 0) end - 1 else 0);
+
+        if (start_seg_idx == null or end_seg_idx == null) {
+            return error.OffsetNotFound;
+        }
+
+        const start_idx = start_seg_idx.?;
+        var end_idx = end_seg_idx.?;
+
+        // 记录 start 位置的相对偏移（在分裂前）
+        var should_split_start = false;
+        var start_relative: usize = 0;
+        if (self.segments.items[start_idx].source_offset) |seg_offset| {
+            start_relative = start - seg_offset;
+            should_split_start = start_relative > 0;
+        }
+
+        // 分裂起始 Segment（如果需要）
+        if (should_split_start) {
+            try self.splitSegment(start_idx, start_relative);
+            end_idx += 1; // 调整 end_idx
+        }
+
+        // 计算实际起始索引
+        const actual_start = if (should_split_start) start_idx + 1 else start_idx;
+
+        // 分裂结束 Segment（如果需要）
+        if (self.segments.items[end_idx].source_offset) |seg_offset| {
+            const relative = end - seg_offset;
+            if (relative > 0 and relative < self.segments.items[end_idx].content.len) {
+                try self.splitSegment(end_idx, relative);
+            }
+        }
+
+        // 保存边界的 intro/outro
+        const saved_intro = self.segments.items[actual_start].intro;
+        const saved_outro = self.segments.items[end_idx].outro;
+
+        // 执行替换
+        try self.doReplaceRange(actual_start, end_idx, content, saved_intro, saved_outro);
+    }
+
+    /// 根据原始字符串的偏移量找到对应的 Segment 索引
+    fn findSegmentBySourceOffset(self: *const MagicString, offset: usize) ?usize {
+        for (self.segments.items, 0..) |*seg, i| {
+            if (seg.source_offset) |seg_offset| {
+                if (offset >= seg_offset and offset < seg_offset + seg.content.len) {
+                    return i;
+                }
+            }
+        }
+        return null;
+    }
+
+    /// 执行实际的范围替换
+    fn doReplaceRange(self: *MagicString, start_idx: usize, end_idx: usize, content: []const u8, intro: ?[]const u8, outro: ?[]const u8) !void {
+        // 创建新 Segment
+        const new_content = try self.allocator.dupe(u8, content);
+        errdefer self.allocator.free(new_content);
+
+        var new_seg = Segment.fromInsert(new_content);
+        new_seg.intro = intro;
+        new_seg.outro = outro;
+
+        // 释放被替换Segments的资源
+        for (start_idx..end_idx + 1) |i| {
+            const seg = &self.segments.items[i];
+            // 如果是插入的内容（source_offset == null），需要释放 content
+            if (seg.source_offset == null) {
+                self.allocator.free(seg.content);
+            }
+            // intro 和 outro 在边界处已经保存到 new_seg，中间的需要释放
+            if (i != start_idx and seg.intro != null) {
+                self.allocator.free(seg.intro.?);
+            }
+            if (i != end_idx and seg.outro != null) {
+                self.allocator.free(seg.outro.?);
+            }
+        }
+
+        // 替换
+        const count = end_idx - start_idx + 1;
+        try self.segments.replaceRange(start_idx, count, &[_]Segment{new_seg});
+
+        self.invalidateCache();
+    }
 };

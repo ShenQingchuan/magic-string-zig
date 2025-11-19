@@ -17,6 +17,7 @@ interface MagicStringAddon {
   toString(handle: number): string;
   appendLeft(handle: number, index: number, content: string): void;
   appendRight(handle: number, index: number, content: string): void;
+  overwrite(handle: number, start: number, end: number, content: string): void;
   destroy(handle: number): void;
 }
 
@@ -137,6 +138,84 @@ describe('MagicString - Phase 2: appendLeft/appendRight', () => {
     addon.appendRight(handle, 9, ";");
     const result = addon.toString(handle);
     expect(result).toBe("// Comment\nvar x = 1;");
+  });
+});
+
+describe('MagicString - Phase 3: overwrite', () => {
+  const handles: number[] = [];
+
+  afterEach(() => {
+    handles.forEach(h => addon.destroy(h));
+    handles.length = 0;
+  });
+
+  it('应该能替换整个字符串', () => {
+    const handle = addon.createMagicString("problems = 99");
+    handles.push(handle);
+    
+    addon.overwrite(handle, 0, 8, "answer");
+    const result = addon.toString(handle);
+    expect(result).toBe("answer = 99");
+  });
+
+  it('应该能替换字符串的一部分', () => {
+    const handle = addon.createMagicString("var x = 1");
+    handles.push(handle);
+    
+    addon.overwrite(handle, 4, 5, "answer");
+    const result = addon.toString(handle);
+    expect(result).toBe("var answer = 1");
+  });
+
+  it('应该能替换末尾的字符', () => {
+    const handle = addon.createMagicString("var x = 99");
+    handles.push(handle);
+    
+    addon.overwrite(handle, 8, 10, "42");
+    const result = addon.toString(handle);
+    expect(result).toBe("var x = 42");
+  });
+
+  it('应该能用空字符串替换（删除效果）', () => {
+    const handle = addon.createMagicString("var x = 1");
+    handles.push(handle);
+    
+    addon.overwrite(handle, 0, 4, "");
+    const result = addon.toString(handle);
+    expect(result).toBe("x = 1");
+  });
+
+  it('应该保留 overwrite 前的 appendLeft/Right', () => {
+    const handle = addon.createMagicString("var x = 1");
+    handles.push(handle);
+    
+    addon.appendLeft(handle, 0, "// Start\n");
+    addon.appendRight(handle, 9, ";");
+    addon.overwrite(handle, 4, 5, "answer");
+    
+    const result = addon.toString(handle);
+    expect(result).toBe("// Start\nvar answer = 1;");
+  });
+
+  it('应该能多次 overwrite 不同的位置', () => {
+    const handle = addon.createMagicString("var x = 1 + 2");
+    handles.push(handle);
+    
+    addon.overwrite(handle, 4, 5, "a");
+    addon.overwrite(handle, 8, 9, "10");
+    addon.overwrite(handle, 12, 13, "20");
+    
+    const result = addon.toString(handle);
+    expect(result).toBe("var a = 10 + 20");
+  });
+
+  it('应该能用更长的字符串替换', () => {
+    const handle = addon.createMagicString("x = 1");
+    handles.push(handle);
+    
+    addon.overwrite(handle, 0, 1, "answer");
+    const result = addon.toString(handle);
+    expect(result).toBe("answer = 1");
   });
 });
 
