@@ -87,12 +87,20 @@ bench('Zig appendLeft', () => {
 }, { time: 1000 })
 ```
 
-### 2. Hyperfine
-- 进程级基准测试，适合端到端场景
-- 支持预热、异常检测、多格式导出
-- 安装：`brew install hyperfine` (macOS)
-- 使用：`hyperfine 'node zig-test.js' 'node js-test.js'`
+### 2. Benchmark 结果与反思
 
-### 测试方案
-- **Vitest Benchmark**：细粒度 API 性能对比
-- **Hyperfine**：真实场景端到端测试
+#### 测试结果
+- **创建实例**：JS 快 ~16x
+- **appendLeft/Right**：JS 快 ~50x
+- **toString**：JS 快 ~400x (由于缓存机制)
+
+#### 原因分析
+1. **N-API 开销**：对于 `magic-string` 这种细粒度 API（频繁的小操作），每次调用跨语言边界的开销（参数转换、上下文切换）远大于操作本身的计算量。
+2. **数据传输**：字符串在 JS 和 Zig 之间传递需要复制和编码转换。
+3. **V8 优化**：JS 引擎对字符串拼接和对象分配有极高的优化。
+
+#### 架构反思
+Native 模块在 Node.js 中的最佳实践并非"逐个函数移植"，而是：
+- **批量处理**：将多次操作合并为一次 Native 调用。
+- **计算密集**：仅在计算量（如 Parsers, Image Processing, Source Map 生成）远大于数据传输开销时使用。
+- **延迟执行**：JS 端记录操作指令（Op Log），仅在 `toString()` 或 `generateMap()` 时一次性传给 Native 执行。
