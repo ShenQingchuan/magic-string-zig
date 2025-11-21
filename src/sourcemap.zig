@@ -155,6 +155,156 @@ pub const SourceMap = struct {
     }
 };
 
+pub const DecodedSegment = struct {
+    generated_column: usize,
+    source_index: ?usize = null,
+    source_line: usize = 0,
+    source_column: usize = 0,
+    name_index: ?usize = null,
+};
+
+pub const DecodedLine = struct {
+    segments: []DecodedSegment,
+};
+
+pub const DecodedSourceMap = struct {
+    allocator: std.mem.Allocator,
+    file: ?[]const u8 = null,
+    source_root: ?[]const u8 = null,
+    sources: []const []const u8,
+    sources_content: ?[]const ?[]const u8 = null,
+    names: []const []const u8,
+    mappings: []DecodedLine,
+
+    pub fn deinit(self: *DecodedSourceMap) void {
+        for (self.sources) |source| {
+            self.allocator.free(source);
+        }
+        self.allocator.free(self.sources);
+
+        if (self.sources_content) |content| {
+            for (content) |entry| {
+                if (entry) |s| self.allocator.free(s);
+            }
+            self.allocator.free(content);
+        }
+
+        for (self.names) |name| {
+            self.allocator.free(name);
+        }
+        self.allocator.free(self.names);
+
+        for (self.mappings) |line| {
+            self.allocator.free(line.segments);
+        }
+        self.allocator.free(self.mappings);
+
+        if (self.file) |file| self.allocator.free(file);
+        if (self.source_root) |root| self.allocator.free(root);
+    }
+};
+
+fn encodeDecodedMappings(allocator: std.mem.Allocator, lines: []const DecodedLine) ![]const u8 {
+    var result: std.ArrayList(u8) = .empty;
+    errdefer result.deinit(allocator);
+
+    var prev_gen_column: i32 = 0;
+    var prev_source_index: i32 = 0;
+    var prev_source_line: i32 = 0;
+    var prev_source_column: i32 = 0;
+    var prev_name_index: i32 = 0;
+
+    for (lines, 0..) |line, line_idx| {
+        if (line_idx > 0) {
+            try result.append(allocator, ';');
+            prev_gen_column = 0;
+        }
+
+        for (line.segments, 0..) |segment, seg_idx| {
+            if (seg_idx > 0) {
+                try result.append(allocator, ',');
+            }
+
+            const gen_col_delta = @as(i32, @intCast(segment.generated_column)) - prev_gen_column;
+            prev_gen_column = @as(i32, @intCast(segment.generated_column));
+
+            var fields = std.ArrayList(i32).empty;
+            defer fields.deinit(allocator);
+
+            try fields.append(allocator, gen_col_delta);
+
+            if (segment.source_index) |source_idx| {
+                const source_delta = @as(i32, @intCast(source_idx)) - prev_source_index;
+                prev_source_index = @as(i32, @intCast(source_idx));
+                try fields.append(allocator, source_delta);
+
+                const line_delta = @as(i32, @intCast(segment.source_line)) - prev_source_line;
+                prev_source_line = @as(i32, @intCast(segment.source_line));
+                try fields.append(allocator, line_delta);
+
+                const column_delta = @as(i32, @intCast(segment.source_column)) - prev_source_column;
+                prev_source_column = @as(i32, @intCast(segment.source_column));
+                try fields.append(allocator, column_delta);
+
+                if (segment.name_index) |name_idx| {
+                    const name_delta = @as(i32, @intCast(name_idx)) - prev_name_index;
+                    prev_name_index = @as(i32, @intCast(name_idx));
+                    try fields.append(allocator, name_delta);
+                } else {
+                    prev_name_index = 0;
+                }
+            } else {
+                prev_source_index = 0;
+                prev_source_line = 0;
+                prev_source_column = 0;
+                prev_name_index = 0;
+            }
+
+            const encoded = try vlq.encodeVLQSegment(allocator, fields.items);
+            defer allocator.free(encoded);
+            try result.appendSlice(allocator, encoded);
+        }
+    }
+
+    return result.toOwnedSlice(allocator);
+}
+
+fn duplicateStringArray(allocator: std.mem.Allocator, items: []const []const u8) ![]const []const u8 {
+    const out = try allocator.alloc([]const u8, items.len);
+    var i: usize = 0;
+    errdefer {
+        while (i > 0) {
+            i -= 1;
+            allocator.free(out[i]);
+        }
+        allocator.free(out);
+    }
+    while (i < items.len) : (i += 1) {
+        out[i] = try allocator.dupe(u8, items[i]);
+    }
+    return out;
+}
+
+fn duplicateOptionalStringArray(allocator: std.mem.Allocator, items: []const ?[]const u8) ![]const ?[]const u8 {
+    const out = try allocator.alloc(?[]const u8, items.len);
+    var i: usize = 0;
+    errdefer {
+        while (i > 0) {
+            i -= 1;
+            if (out[i]) |value| allocator.free(value);
+        }
+        allocator.free(out);
+    }
+    while (i < items.len) : (i += 1) {
+        if (items[i]) |value| {
+            out[i] = try allocator.dupe(u8, value);
+        } else {
+            out[i] = null;
+        }
+    }
+    return out;
+}
+
 /// Source Map 生成器
 ///
 /// 负责从 MagicString 实例生成 Source Map
@@ -184,16 +334,27 @@ pub const SourceMapGenerator = struct {
     /// - 每个段包含 1、4 或 5 个 VLQ 编码的字段：
     ///   [生成列, 源文件索引, 源行, 源列, 名称索引]
     pub fn generate(self: *SourceMapGenerator) !*SourceMap {
-        // 准备源文件列表
-        const source_name = self.options.source orelse "";
-        const sources = try self.allocator.alloc([]const u8, 1);
-        sources[0] = try self.allocator.dupe(u8, source_name);
-        errdefer {
-            for (sources) |s| self.allocator.free(s);
-            self.allocator.free(sources);
+        const decoded = try self.generateDecoded();
+        defer {
+            decoded.deinit();
+            self.allocator.destroy(decoded);
         }
+        return try createSourceMapFromDecoded(self.allocator, decoded);
+    }
 
-        // 准备源文件内容（如果需要）
+    pub fn generateDecoded(self: *SourceMapGenerator) !*DecodedSourceMap {
+        return try self.buildDecodedMap();
+    }
+
+    fn buildDecodedMap(self: *SourceMapGenerator) !*DecodedSourceMap {
+        const source_name = self.options.source orelse "";
+        var sources_list = std.ArrayList([]const u8).empty;
+        errdefer sources_list.deinit(self.allocator);
+        const dup_source = try self.allocator.dupe(u8, source_name);
+        try sources_list.append(self.allocator, dup_source);
+
+        const sources = try sources_list.toOwnedSlice(self.allocator);
+
         const sources_content = if (self.options.include_content) blk: {
             const content = try self.allocator.alloc(?[]const u8, 1);
             content[0] = try self.allocator.dupe(u8, self.magic_string.original);
@@ -206,82 +367,89 @@ pub const SourceMapGenerator = struct {
             self.allocator.free(content);
         };
 
-        // 生成 mappings 字符串
-        const mappings = try self.generateMappings();
-        errdefer self.allocator.free(mappings);
+        const mappings = try self.generateDecodedMappings();
+        errdefer {
+            for (mappings) |line| self.allocator.free(line.segments);
+            self.allocator.free(mappings);
+        }
 
-        // 创建 Source Map 对象
-        const map = try self.allocator.create(SourceMap);
-        map.* = SourceMap{
+        const map = try self.allocator.create(DecodedSourceMap);
+        map.* = DecodedSourceMap{
             .allocator = self.allocator,
-            .version = 3,
             .file = if (self.options.file) |f| try self.allocator.dupe(u8, f) else null,
             .source_root = if (self.options.source_root) |r| try self.allocator.dupe(u8, r) else null,
             .sources = sources,
             .sources_content = sources_content,
-            .names = try self.allocator.alloc([]const u8, 0), // 不支持 names
+            .names = try self.allocator.alloc([]const u8, 0),
             .mappings = mappings,
         };
 
         return map;
     }
 
-    /// 生成 mappings 字符串
-    ///
-    /// mappings 编码说明：
-    /// - 每行生成代码对应一行 mappings（单行代码用单行 mappings）
-    /// - 行内的每个段描述一个映射关系
-    /// - 使用相对偏移量编码（除了每行的第一个段）
-    ///
-    /// 每个段的字段（VLQ 编码）：
-    /// 1. 生成代码的列偏移（相对于上一段）
-    /// 2. 源文件索引（相对于上一段，我们只有一个源文件所以通常是 0）
-    /// 3. 源代码的行偏移（相对于上一段）
-    /// 4. 源代码的列偏移（相对于上一段）
-    /// 5. 名称索引（可选，我们暂不使用）
-    fn generateMappings(self: *SourceMapGenerator) ![]const u8 {
-        var result: std.ArrayList(u8) = .empty;
-        errdefer result.deinit(self.allocator);
-
+    fn generateDecodedMappings(self: *SourceMapGenerator) ![]DecodedLine {
         const line_starts = try self.computeLineStartOffsets();
         defer self.allocator.free(line_starts);
 
-        // 跟踪上一个映射的位置（用于计算相对偏移）
-        var prev_gen_column: i32 = 0;
-        var prev_source_index: i32 = 0;
-        var prev_source_line: i32 = 0;
-        var prev_source_column: i32 = 0;
+        const LineBuilder = struct {
+            segments: std.ArrayList(DecodedSegment),
+        };
 
-        // 当前生成代码的位置
+        var lines = std.ArrayList(LineBuilder).empty;
+        errdefer {
+            for (lines.items) |*builder| builder.segments.deinit(self.allocator);
+            lines.deinit(self.allocator);
+        }
+
+        try lines.append(self.allocator, .{ .segments = std.ArrayList(DecodedSegment).empty });
+        var current_segments = &lines.items[0].segments;
+
         var gen_line: usize = 0;
         var gen_column: usize = 0;
-        var has_segment_in_line = false; // 跟踪当前行是否已经有 segment
 
-        // 遍历所有 Segment
+        const startNewLine = struct {
+            fn run(
+                parent: *SourceMapGenerator,
+                lines_ref: *std.ArrayList(LineBuilder),
+                gen_line_ref: *usize,
+                current_segments_ref: **std.ArrayList(DecodedSegment),
+            ) !void {
+                gen_line_ref.* += 1;
+                try lines_ref.append(parent.allocator, .{ .segments = std.ArrayList(DecodedSegment).empty });
+                current_segments_ref.* = &lines_ref.items[lines_ref.items.len - 1].segments;
+            }
+        }.run;
+
+        const recordSegment = struct {
+            fn run(
+                builder: *std.ArrayList(DecodedSegment),
+                allocator: std.mem.Allocator,
+                gen_column_value: usize,
+                source_line: usize,
+                source_column: usize,
+            ) !void {
+                try builder.append(allocator, .{
+                    .generated_column = gen_column_value,
+                    .source_index = 0,
+                    .source_line = source_line,
+                    .source_column = source_column,
+                    .name_index = null,
+                });
+            }
+        }.run;
+
         for (self.magic_string.segments.items) |*segment| {
-            // 处理 intro（插入在左侧的内容）
             if (segment.intro) |intro| {
-                // 检查 intro 中是否有换行符
                 for (intro) |c| {
                     if (c == '\n') {
-                        // 遇到换行符，添加行分隔符并重置
-                        if (has_segment_in_line) {
-                            try result.append(self.allocator, ';');
-                            has_segment_in_line = false;
-                        } else {
-                            // 如果当前行没有 segment，也需要添加空行标记
-                            try result.append(self.allocator, ';');
-                        }
-                        gen_line += 1;
+                        try startNewLine(self, &lines, &gen_line, &current_segments);
                         gen_column = 0;
-                        prev_gen_column = 0; // 新行的第一个 segment 使用绝对位置
                     } else {
                         gen_column += 1;
                     }
                 }
             }
 
-            // 处理 Segment 的主体内容
             if (segment.source_offset) |source_offset| {
                 if (segment.content.len > 0) {
                     const start_lc = lineColumnFromOffset(line_starts, source_offset);
@@ -291,31 +459,14 @@ pub const SourceMapGenerator = struct {
 
                     for (segment.content) |c| {
                         if (c == '\n') {
-                            if (has_segment_in_line) {
-                                try result.append(self.allocator, ';');
-                                has_segment_in_line = false;
-                            } else {
-                                try result.append(self.allocator, ';');
-                            }
-                            gen_line += 1;
+                            try startNewLine(self, &lines, &gen_line, &current_segments);
                             gen_column = 0;
-                            prev_gen_column = 0;
                             source_line += 1;
                             source_column = 0;
                             first_in_line = true;
                         } else {
                             if (first_in_line) {
-                                try self.appendMapping(
-                                    &result,
-                                    gen_column,
-                                    source_line,
-                                    source_column,
-                                    &has_segment_in_line,
-                                    &prev_gen_column,
-                                    &prev_source_index,
-                                    &prev_source_line,
-                                    &prev_source_column,
-                                );
+                                try recordSegment(current_segments, self.allocator, gen_column, source_line, source_column);
                                 first_in_line = false;
                             }
                             gen_column += 1;
@@ -324,54 +475,28 @@ pub const SourceMapGenerator = struct {
                     }
                 }
             } else {
-                // 这是插入的内容（overwrite 替换的内容）
-                // 如果它覆盖了原始内容（即是替换操作），且有内容输出，需要生成映射
                 if (segment.original_end > segment.original_start and segment.content.len > 0) {
                     const lc = lineColumnFromOffset(line_starts, segment.original_start);
                     var first_in_line = true;
 
                     for (segment.content) |c| {
                         if (c == '\n') {
-                            if (has_segment_in_line) {
-                                try result.append(self.allocator, ';');
-                                has_segment_in_line = false;
-                            } else {
-                                try result.append(self.allocator, ';');
-                            }
-                            gen_line += 1;
+                            try startNewLine(self, &lines, &gen_line, &current_segments);
                             gen_column = 0;
-                            prev_gen_column = 0;
                             first_in_line = true;
                         } else {
                             if (first_in_line) {
-                                try self.appendMapping(
-                                    &result,
-                                    gen_column,
-                                    lc.line,
-                                    lc.column,
-                                    &has_segment_in_line,
-                                    &prev_gen_column,
-                                    &prev_source_index,
-                                    &prev_source_line,
-                                    &prev_source_column,
-                                );
+                                try recordSegment(current_segments, self.allocator, gen_column, lc.line, lc.column);
                                 first_in_line = false;
                             }
                             gen_column += 1;
                         }
                     }
                 } else {
-                    for (segment.content) |c| {
-                        if (c == '\n') {
-                            if (has_segment_in_line) {
-                                try result.append(self.allocator, ';');
-                                has_segment_in_line = false;
-                            } else {
-                                try result.append(self.allocator, ';');
-                            }
-                            gen_line += 1;
+                for (segment.content) |c| {
+                    if (c == '\n') {
+                            try startNewLine(self, &lines, &gen_line, &current_segments);
                             gen_column = 0;
-                            prev_gen_column = 0;
                         } else {
                             gen_column += 1;
                         }
@@ -379,20 +504,11 @@ pub const SourceMapGenerator = struct {
                 }
             }
 
-            // 处理 outro（插入在右侧的内容）
             if (segment.outro) |outro| {
-                // 检查 outro 中是否有换行符
                 for (outro) |c| {
                     if (c == '\n') {
-                        if (has_segment_in_line) {
-                            try result.append(self.allocator, ';');
-                            has_segment_in_line = false;
-                        } else {
-                            try result.append(self.allocator, ';');
-                        }
-                        gen_line += 1;
+                        try startNewLine(self, &lines, &gen_line, &current_segments);
                         gen_column = 0;
-                        prev_gen_column = 0;
                     } else {
                         gen_column += 1;
                     }
@@ -400,41 +516,20 @@ pub const SourceMapGenerator = struct {
             }
         }
 
-        return result.toOwnedSlice(self.allocator);
-    }
-
-    fn appendMapping(
-        self: *SourceMapGenerator,
-        result: *std.ArrayList(u8),
-        gen_column: usize,
-        source_line: usize,
-        source_column: usize,
-        has_segment_in_line: *bool,
-        prev_gen_column: *i32,
-        prev_source_index: *i32,
-        prev_source_line: *i32,
-        prev_source_column: *i32,
-    ) !void {
-        const gen_col_delta = @as(i32, @intCast(gen_column)) - prev_gen_column.*;
-        const source_index_delta = 0 - prev_source_index.*;
-        const source_line_delta = @as(i32, @intCast(source_line)) - prev_source_line.*;
-        const source_col_delta = @as(i32, @intCast(source_column)) - prev_source_column.*;
-
-        const fields = [4]i32{ gen_col_delta, source_index_delta, source_line_delta, source_col_delta };
-        const encoded = try vlq.encodeVLQSegment(self.allocator, &fields);
-        defer self.allocator.free(encoded);
-
-        if (has_segment_in_line.*) {
-            try result.append(self.allocator, ',');
+        const decoded_lines = try self.allocator.alloc(DecodedLine, lines.items.len);
+        errdefer {
+            for (decoded_lines[0..]) |line| self.allocator.free(line.segments);
+            self.allocator.free(decoded_lines);
         }
 
-        try result.appendSlice(self.allocator, encoded);
-        has_segment_in_line.* = true;
+        for (lines.items, 0..) |*builder, idx| {
+            decoded_lines[idx] = DecodedLine{
+                .segments = try builder.segments.toOwnedSlice(self.allocator),
+            };
+        }
+        lines.deinit(self.allocator);
 
-        prev_gen_column.* = @as(i32, @intCast(gen_column));
-        prev_source_index.* = 0;
-        prev_source_line.* = @as(i32, @intCast(source_line));
-        prev_source_column.* = @as(i32, @intCast(source_column));
+        return decoded_lines;
     }
 
     fn computeLineStartOffsets(self: *SourceMapGenerator) ![]usize {
@@ -476,6 +571,349 @@ pub const SourceMapGenerator = struct {
         column: usize,
     };
 };
+
+fn createSourceMapFromDecoded(allocator: std.mem.Allocator, decoded: *DecodedSourceMap) !*SourceMap {
+    const sources = try duplicateStringArray(allocator, decoded.sources);
+    errdefer {
+        for (sources) |s| allocator.free(s);
+        allocator.free(sources);
+    }
+
+    const sources_content = if (decoded.sources_content) |content| blk: {
+        const dup = try duplicateOptionalStringArray(allocator, content);
+        break :blk dup;
+    } else null;
+    errdefer if (sources_content) |content| {
+        for (content) |entry| {
+            if (entry) |value| allocator.free(value);
+        }
+        allocator.free(content);
+    };
+
+    const names = try duplicateStringArray(allocator, decoded.names);
+    errdefer {
+        for (names) |n| allocator.free(n);
+        allocator.free(names);
+    }
+
+    const mappings = try encodeDecodedMappings(allocator, decoded.mappings);
+    errdefer allocator.free(mappings);
+
+    const map = try allocator.create(SourceMap);
+    map.* = SourceMap{
+        .allocator = allocator,
+        .version = 3,
+        .file = if (decoded.file) |f| try allocator.dupe(u8, f) else null,
+        .source_root = if (decoded.source_root) |r| try allocator.dupe(u8, r) else null,
+        .sources = sources,
+        .sources_content = sources_content,
+        .names = names,
+        .mappings = mappings,
+    };
+    return map;
+}
+
+pub fn decodedToSourceMap(allocator: std.mem.Allocator, decoded: *DecodedSourceMap) !*SourceMap {
+    return try createSourceMapFromDecoded(allocator, decoded);
+}
+
+pub fn cloneDecodedMap(allocator: std.mem.Allocator, map: *DecodedSourceMap) !*DecodedSourceMap {
+    const sources = try duplicateStringArray(allocator, map.sources);
+    errdefer {
+        for (sources) |s| allocator.free(s);
+        allocator.free(sources);
+    }
+
+    const sources_content = if (map.sources_content) |content| blk: {
+        const dup = try duplicateOptionalStringArray(allocator, content);
+        break :blk dup;
+    } else null;
+    errdefer if (sources_content) |content| {
+        for (content) |entry| {
+            if (entry) |value| allocator.free(value);
+        }
+        allocator.free(content);
+    };
+
+    const names = try duplicateStringArray(allocator, map.names);
+    errdefer {
+        for (names) |n| allocator.free(n);
+        allocator.free(names);
+    }
+
+    const mappings = try cloneDecodedLines(allocator, map.mappings);
+    errdefer {
+        for (mappings) |line| allocator.free(line.segments);
+        allocator.free(mappings);
+    }
+
+    const clone = try allocator.create(DecodedSourceMap);
+    clone.* = DecodedSourceMap{
+        .allocator = allocator,
+        .file = if (map.file) |f| try allocator.dupe(u8, f) else null,
+        .source_root = if (map.source_root) |r| try allocator.dupe(u8, r) else null,
+        .sources = sources,
+        .sources_content = sources_content,
+        .names = names,
+        .mappings = mappings,
+    };
+    return clone;
+}
+
+fn cloneDecodedLines(allocator: std.mem.Allocator, lines: []const DecodedLine) ![]DecodedLine {
+    const out = try allocator.alloc(DecodedLine, lines.len);
+    errdefer {
+        for (out[0..]) |line| allocator.free(line.segments);
+        allocator.free(out);
+    }
+
+    for (lines, 0..) |line, idx| {
+        const segs = try allocator.alloc(DecodedSegment, line.segments.len);
+        @memcpy(segs, line.segments);
+        out[idx] = DecodedLine{ .segments = segs };
+    }
+
+    return out;
+}
+
+const SourceAccumulator = struct {
+    allocator: std.mem.Allocator,
+    store_content: bool,
+    table: std.StringHashMap(usize),
+    names: std.ArrayList([]const u8),
+    contents: std.ArrayList(?[]const u8),
+
+    fn init(allocator: std.mem.Allocator, store_content: bool) SourceAccumulator {
+        return .{
+            .allocator = allocator,
+            .store_content = store_content,
+            .table = std.StringHashMap(usize).init(allocator),
+            .names = std.ArrayList([]const u8).empty,
+            .contents = std.ArrayList(?[]const u8).empty,
+        };
+    }
+
+    fn put(self: *SourceAccumulator, name: []const u8, content: ?[]const u8) !usize {
+        if (self.table.get(name)) |idx| return idx;
+        const dup_name = try self.allocator.dupe(u8, name);
+        const index = self.names.items.len;
+        try self.names.append(self.allocator, dup_name);
+
+        if (self.store_content) {
+            if (content) |value| {
+                try self.contents.append(self.allocator, try self.allocator.dupe(u8, value));
+            } else {
+                try self.contents.append(self.allocator, null);
+            }
+        }
+
+        try self.table.put(dup_name, index);
+        return index;
+    }
+
+    fn finish(self: *SourceAccumulator) !struct {
+        sources: []const []const u8,
+        contents: ?[]const ?[]const u8,
+    } {
+        const sources = try self.names.toOwnedSlice(self.allocator);
+        const contents = if (self.store_content) blk: {
+            const dup = try self.contents.toOwnedSlice(self.allocator);
+            break :blk dup;
+        } else null;
+        return .{ .sources = sources, .contents = contents };
+    }
+
+    fn deinit(self: *SourceAccumulator) void {
+        self.table.deinit();
+        self.names.deinit(self.allocator);
+        self.contents.deinit(self.allocator);
+    }
+};
+
+const StringInterner = struct {
+    allocator: std.mem.Allocator,
+    table: std.StringHashMap(usize),
+    values: std.ArrayList([]const u8),
+
+    fn init(allocator: std.mem.Allocator) StringInterner {
+        return .{
+            .allocator = allocator,
+            .table = std.StringHashMap(usize).init(allocator),
+            .values = std.ArrayList([]const u8).empty,
+        };
+    }
+
+    fn put(self: *StringInterner, value: []const u8) !usize {
+        if (self.table.get(value)) |idx| {
+            return idx;
+        }
+        const dup = try self.allocator.dupe(u8, value);
+        const index = self.values.items.len;
+        try self.values.append(self.allocator, dup);
+        try self.table.put(dup, index);
+        return index;
+    }
+
+    fn finish(self: *StringInterner) ![]const []const u8 {
+        return self.values.toOwnedSlice(self.allocator);
+    }
+
+    fn deinit(self: *StringInterner) void {
+        self.table.deinit();
+        self.values.deinit(self.allocator);
+    }
+};
+
+const TraceResult = struct {
+    source_name: []const u8,
+    source_content: ?[]const u8,
+    line: usize,
+    column: usize,
+    name: ?[]const u8,
+};
+
+fn findSegment(segments: []const DecodedSegment, column: usize) ?*const DecodedSegment {
+    var low: usize = 0;
+    var high: usize = segments.len;
+
+    while (low < high) {
+        const mid = low + (high - low) / 2;
+        const mid_column = segments[mid].generated_column;
+        if (mid_column == column) {
+            return &segments[mid];
+        } else if (mid_column < column) {
+            low = mid + 1;
+        } else {
+            high = mid;
+        }
+    }
+
+    return null;
+}
+
+fn traceThroughChain(
+    maps: []const *DecodedSourceMap,
+    depth: usize,
+    line: usize,
+    column: usize,
+    current_name: ?[]const u8,
+) ?TraceResult {
+    const map = maps[depth];
+    if (line >= map.mappings.len) return null;
+    const segment_ptr = findSegment(map.mappings[line].segments, column) orelse return null;
+    const segment = segment_ptr.*;
+
+    const next_name = if (segment.name_index) |idx| map.names[idx] else current_name;
+    if (segment.source_index == null) return null;
+
+    if (depth + 1 >= maps.len) {
+        const source_idx = segment.source_index.?;
+        const source_name = map.sources[source_idx];
+        const source_content = if (map.sources_content) |content| content[source_idx] else null;
+        return TraceResult{
+            .source_name = source_name,
+            .source_content = source_content,
+            .line = segment.source_line,
+            .column = segment.source_column,
+            .name = next_name,
+        };
+    }
+
+    if (segment.source_index.? != 0) return null;
+
+    return traceThroughChain(
+        maps,
+        depth + 1,
+        segment.source_line,
+        segment.source_column,
+        next_name,
+    );
+}
+
+pub fn mergeDecodedMaps(
+    allocator: std.mem.Allocator,
+    maps: []const *DecodedSourceMap,
+    include_content: bool,
+) !*DecodedSourceMap {
+    if (maps.len == 0) return error.NoSourceMaps;
+    if (maps.len == 1) {
+        return try cloneDecodedMap(allocator, maps[0]);
+    }
+
+    for (maps[0 .. maps.len - 1]) |map| {
+        if (map.sources.len != 1) {
+            return error.InvalidTransformMap;
+        }
+    }
+
+    var sources_acc = SourceAccumulator.init(allocator, include_content);
+    defer sources_acc.deinit();
+    var names_acc = StringInterner.init(allocator);
+    defer names_acc.deinit();
+
+    const root = maps[0];
+    const final_lines = try allocator.alloc(DecodedLine, root.mappings.len);
+    errdefer {
+        for (final_lines[0..]) |line| allocator.free(line.segments);
+        allocator.free(final_lines);
+    }
+
+    for (root.mappings, 0..) |line, line_idx| {
+        var builder = std.ArrayList(DecodedSegment).empty;
+        errdefer builder.deinit(allocator);
+
+        for (line.segments) |segment| {
+            if (segment.source_index == null) continue;
+            const initial_name = if (segment.name_index) |idx| root.names[idx] else null;
+            const traced = traceThroughChain(maps, 0, line_idx, segment.generated_column, initial_name) orelse continue;
+
+            const source_idx = try sources_acc.put(traced.source_name, traced.source_content);
+            const name_idx = if (traced.name) |name_value| try names_acc.put(name_value) else null;
+
+            try builder.append(allocator, .{
+                .generated_column = segment.generated_column,
+                .source_index = source_idx,
+                .source_line = traced.line,
+                .source_column = traced.column,
+                .name_index = name_idx,
+            });
+        }
+
+        final_lines[line_idx] = DecodedLine{
+            .segments = try builder.toOwnedSlice(allocator),
+        };
+        builder.deinit(allocator);
+    }
+
+    const sources_result = try sources_acc.finish();
+    const names_result = try names_acc.finish();
+
+    var merged_lines = final_lines;
+    var used_len = merged_lines.len;
+    while (used_len > 0 and merged_lines[used_len - 1].segments.len == 0) {
+        used_len -= 1;
+        allocator.free(merged_lines[used_len].segments);
+    }
+    if (used_len != merged_lines.len) {
+        const trimmed_lines = try allocator.alloc(DecodedLine, used_len);
+        @memcpy(trimmed_lines, merged_lines[0..used_len]);
+        allocator.free(merged_lines);
+        merged_lines = trimmed_lines;
+    }
+
+    const merged = try allocator.create(DecodedSourceMap);
+    merged.* = DecodedSourceMap{
+        .allocator = allocator,
+        .file = if (root.file) |f| try allocator.dupe(u8, f) else null,
+        .source_root = if (root.source_root) |r| try allocator.dupe(u8, r) else null,
+        .sources = sources_result.sources,
+        .sources_content = sources_result.contents,
+        .names = names_result,
+        .mappings = merged_lines,
+    };
+
+    return merged;
+}
 
 // ============================================================================
 // 单元测试

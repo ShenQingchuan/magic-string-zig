@@ -24,6 +24,7 @@
 - ⚡ **高性能**：采用 Zig 编写，零成本抽象，内存布局优化
 - 🎯 **精确追踪**：支持在任意位置插入、替换内容，并准确记录原始位置
 - 🗺️ **Source Map 生成**：完整支持 Source Map v3 规范，包括 VLQ 编码
+- 🧱 **MagicStringStack**：原生提供 `commit/rollback`，可在多次变换后自动合并 Source Map
 - 🔄 **Zig 0.15 就绪**：已完成迁移，使用新的 `std.Io.Writer` 接口和 `std.json.fmt` API
 - 🧪 **完整测试**：包含单元测试和一致性测试，确保与 JS 版本功能一致
 - 📊 **基准测试**：提供性能基准测试工具
@@ -53,6 +54,7 @@ zig build test
 ```zig
 const std = @import("std");
 const MagicString = @import("magic_string").MagicString;
+const MagicStringStack = @import("magic_string").MagicStringStack;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -74,8 +76,28 @@ pub fn main() !void {
     defer allocator.free(result);
     
     std.debug.print("{s}\n", .{result}); // 输出: "Hello Beautiful Zig!"
+
+    // 如果需要多次变换，可使用 MagicStringStack
+    var stack = try MagicStringStack.init(allocator, "function greet(user) { return user.name; }");
+    defer stack.deinit();
+
+    try stack.appendLeft(0, "/* instrumentation */\n");
+    try stack.commit(); // 变换提交，此时 original 更新为最新结果
+
+    try stack.overwrite(32, 36, "account");
+    const merged = try stack.generateMap(.{
+        .file = "output.js",
+        .source = "input.js",
+        .include_content = true,
+    });
+    defer {
+        merged.deinit();
+        allocator.destroy(merged);
+    }
 }
 ```
+
+更多关于 `MagicStringStack` 的设计与使用细节，可参考 `docs/stack_design.md`。
 
 ## 📚 API 文档
 

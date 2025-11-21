@@ -1,6 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
 const MagicString = @import("magic_string").MagicString;
+const MagicStringStack = @import("magic_string").MagicStringStack;
 
 test "基础功能: 初始化和 toString" {
     const allocator = testing.allocator;
@@ -323,4 +324,52 @@ test "Source Map: 复杂操作组合" {
     }
 
     try testing.expectEqual(@as(u8, 3), map.version);
+}
+
+test "MagicStringStack: commit and rollback" {
+    const allocator = testing.allocator;
+    const stack = try MagicStringStack.init(allocator, "world");
+    defer stack.deinit();
+
+    try stack.appendLeft(0, "Hello ");
+
+    const first = try stack.toString();
+    defer allocator.free(first);
+    try testing.expectEqualStrings("Hello world", first);
+
+    try stack.commit();
+    try stack.overwrite(6, 11, "Zig");
+
+    const second = try stack.toString();
+    defer allocator.free(second);
+    try testing.expectEqualStrings("Hello Zig", second);
+
+    try stack.rollback();
+
+    const reverted = try stack.toString();
+    defer allocator.free(reverted);
+    try testing.expectEqualStrings("Hello world", reverted);
+}
+
+test "MagicStringStack: multiple commits" {
+    const allocator = testing.allocator;
+    const stack = try MagicStringStack.init(allocator, "let value = compute();");
+    defer stack.deinit();
+
+    try stack.appendLeft(0, "// header\n");
+    try stack.overwrite(4, 9, "result");
+    try stack.commit();
+
+    const stage_two_source = try stack.toString();
+    defer allocator.free(stage_two_source);
+
+    try stack.appendRight(stage_two_source.len, "\nconsole.log(result);");
+    const compute_pattern = "compute()";
+    const compute_idx = std.mem.indexOf(u8, stage_two_source, compute_pattern) orelse unreachable;
+    try stack.overwrite(compute_idx, compute_idx + compute_pattern.len, "track()");
+
+    const output = try stack.toString();
+    defer allocator.free(output);
+
+    try testing.expectEqualStrings("// header\nlet result = track();\nconsole.log(result);", output);
 }

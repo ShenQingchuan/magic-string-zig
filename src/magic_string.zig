@@ -90,6 +90,160 @@ pub const Segment = struct {
     }
 };
 
+const STACK_SOURCE_PLACEHOLDER = "__magic_string_stack__.zig";
+
+pub const MagicStringStack = struct {
+    allocator: std.mem.Allocator,
+    layers: std.ArrayList(*MagicString),
+
+    pub fn init(allocator: std.mem.Allocator, source: []const u8) !*MagicStringStack {
+        const self = try allocator.create(MagicStringStack);
+        self.* = .{
+            .allocator = allocator,
+            .layers = .empty,
+        };
+
+        const first = try MagicString.init(allocator, source);
+        errdefer {
+            first.deinit();
+            allocator.destroy(self);
+        }
+        try self.layers.append(self.allocator, first);
+        return self;
+    }
+
+    pub fn deinit(self: *MagicStringStack) void {
+        for (self.layers.items) |layer| {
+            layer.deinit();
+        }
+        self.layers.deinit(self.allocator);
+        self.allocator.destroy(self);
+    }
+
+    fn current(self: *MagicStringStack) *MagicString {
+        return self.layers.items[0];
+    }
+
+    pub fn commit(self: *MagicStringStack) !void {
+        const rendered = try self.current().toString();
+        defer self.allocator.free(rendered);
+
+        const next = try MagicString.init(self.allocator, rendered);
+        errdefer next.deinit();
+
+        try self.layers.insert(self.allocator, 0, next);
+    }
+
+    pub fn rollback(self: *MagicStringStack) !void {
+        if (self.layers.items.len <= 1) {
+            return error.CannotRollback;
+        }
+        const removed = self.layers.orderedRemove(0);
+        removed.deinit();
+    }
+
+    pub fn appendLeft(self: *MagicStringStack, index: usize, content: []const u8) !void {
+        try self.current().appendLeft(index, content);
+    }
+
+    pub fn appendRight(self: *MagicStringStack, index: usize, content: []const u8) !void {
+        try self.current().appendRight(index, content);
+    }
+
+    pub fn overwrite(self: *MagicStringStack, start: usize, end: usize, content: []const u8) !void {
+        try self.current().overwrite(start, end, content);
+    }
+
+    pub fn toString(self: *MagicStringStack) ![]const u8 {
+        return try self.current().toString();
+    }
+
+    pub fn generateDecodedMap(self: *MagicStringStack, options: sourcemap.SourceMapOptions) !*sourcemap.DecodedSourceMap {
+        if (self.layers.items.len == 0) {
+            return error.EmptyStack;
+        }
+
+        if (self.layers.items.len == 1) {
+            return try self.current().generateDecodedMap(options);
+        }
+
+        const count = self.layers.items.len;
+        const decoded_maps = try self.allocator.alloc(*sourcemap.DecodedSourceMap, count);
+        var initialized: usize = 0;
+        errdefer {
+            while (initialized > 0) {
+                initialized -= 1;
+                decoded_maps[initialized].deinit();
+                self.allocator.destroy(decoded_maps[initialized]);
+            }
+            self.allocator.free(decoded_maps);
+        }
+
+        for (self.layers.items, 0..) |layer, idx| {
+            var layer_options = options;
+            layer_options.source = STACK_SOURCE_PLACEHOLDER;
+            layer_options.include_content = idx == count - 1 and options.include_content;
+            decoded_maps[idx] = try layer.generateDecodedMap(layer_options);
+            initialized += 1;
+        }
+
+        const merged = try sourcemap.mergeDecodedMaps(self.allocator, decoded_maps, options.include_content);
+
+        for (decoded_maps[0..count]) |map_ptr| {
+            map_ptr.deinit();
+            self.allocator.destroy(map_ptr);
+        }
+        self.allocator.free(decoded_maps);
+
+        const final_source_name = options.source orelse "";
+        var needs_replace = false;
+        for (merged.sources) |source_name| {
+            if (std.mem.eql(u8, source_name, STACK_SOURCE_PLACEHOLDER)) {
+                needs_replace = true;
+                break;
+            }
+        }
+
+        if (needs_replace) {
+            const new_sources = try merged.allocator.alloc([]const u8, merged.sources.len);
+            var assigned: usize = 0;
+            errdefer {
+                while (assigned > 0) {
+                    assigned -= 1;
+                    merged.allocator.free(new_sources[assigned]);
+                }
+                merged.allocator.free(new_sources);
+            }
+
+            while (assigned < merged.sources.len) : (assigned += 1) {
+                const source_name = merged.sources[assigned];
+                const target = if (std.mem.eql(u8, source_name, STACK_SOURCE_PLACEHOLDER))
+                    final_source_name
+                else
+                    source_name;
+                new_sources[assigned] = try merged.allocator.dupe(u8, target);
+            }
+
+            for (merged.sources) |source_name| {
+                merged.allocator.free(source_name);
+            }
+            merged.allocator.free(merged.sources);
+            merged.sources = new_sources;
+        }
+
+        return merged;
+    }
+
+    pub fn generateMap(self: *MagicStringStack, options: sourcemap.SourceMapOptions) !*sourcemap.SourceMap {
+        const decoded = try self.generateDecodedMap(options);
+        defer {
+            decoded.deinit();
+            self.allocator.destroy(decoded);
+        }
+        return try sourcemap.decodedToSourceMap(self.allocator, decoded);
+    }
+};
+
 /// MagicString 主结构体
 /// 采用 ArrayList 存储 Segments，提供 Cache-friendly 的内存布局
 pub const MagicString = struct {
@@ -608,5 +762,10 @@ pub const MagicString = struct {
     pub fn generateMap(self: *const MagicString, options: sourcemap.SourceMapOptions) !*sourcemap.SourceMap {
         var generator = sourcemap.SourceMapGenerator.init(self.allocator, self, options);
         return try generator.generate();
+    }
+
+    pub fn generateDecodedMap(self: *const MagicString, options: sourcemap.SourceMapOptions) !*sourcemap.DecodedSourceMap {
+        var generator = sourcemap.SourceMapGenerator.init(self.allocator, self, options);
+        return try generator.generateDecoded();
     }
 };

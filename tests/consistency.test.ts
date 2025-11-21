@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import MagicString from 'magic-string';
+import MagicStringStack from 'magic-string-stack';
 import { execSync } from 'node:child_process';
 
 interface ScenarioResult {
@@ -9,6 +10,7 @@ interface ScenarioResult {
 }
 
 type ScenarioBuilder = (ms: MagicString, source: string) => void;
+type StackScenarioBuilder = (stack: MagicStringStack, source: string) => void;
 
 const findIndexOrThrow = (text: string, token: string, fromIndex = 0): number => {
   const idx = text.indexOf(token, fromIndex);
@@ -53,6 +55,27 @@ describe('Consistency Check with Zig Implementation', () => {
     expect(zigMap.mappings).toBe(map.mappings);
   };
 
+  const verifyStackScenario = (name: string, source: string, build: StackScenarioBuilder) => {
+    const zigResult = zigResults.find(r => r.name === name);
+    if (!zigResult) throw new Error(`Scenario "${name}" not found in Zig output`);
+
+    const stack = new MagicStringStack(source);
+    build(stack, source);
+
+    const content = stack.toString();
+    const map = stack.generateMap({
+      source: 'input.js',
+      file: 'output.js',
+      includeContent: true,
+    });
+    const mapJson = JSON.parse(map.toString());
+
+    expect(content).toBe(zigResult.content);
+
+    const zigMap = JSON.parse(zigResult.map);
+    expect(zigMap).toEqual(mapJson);
+  };
+
   beforeAll(() => {
     // 1. 构建 Zig 快照生成工具
     console.log('Building Zig snapshot generator...');
@@ -72,9 +95,9 @@ describe('Consistency Check with Zig Implementation', () => {
 
   it('should match "complex_combination" scenario', () => {
     verifyScenario('complex_combination', 'var x = 1', ms => {
-      ms.appendLeft(0, '// Comment\n');
-      ms.overwrite(4, 5, 'answer');
-      ms.appendRight(9, ';');
+    ms.appendLeft(0, '// Comment\n');
+    ms.overwrite(4, 5, 'answer');
+    ms.appendRight(9, ';');
     });
   });
 
@@ -126,7 +149,7 @@ return result;
 
     verifyScenario('tracked_calls', source, (ms, original) => {
       ms.overwrite(0, 'let'.length, 'const');
-
+    
       const firstCall = 'format(user.firstName)';
       const firstStart = findIndexOrThrow(original, firstCall);
       ms.appendLeft(firstStart, 'track(');
@@ -144,6 +167,38 @@ return result;
       ms.appendRight(firstLineTerminator + 1, ' // init done');
 
       ms.appendRight(original.length, '\nconsole.log(result);');
+    });
+  });
+
+  it('should match "stack_commits" scenario', () => {
+    const source = `
+function greet(user) {
+  const name = user.name;
+  return name.toUpperCase();
+}
+    `.trim();
+
+    verifyStackScenario('stack_commits', source, (stack, original) => {
+      stack.appendLeft(0, '"use strict";\n');
+
+      const braceBoundary = findIndexOrThrow(original, '{') + 1;
+      stack.appendLeft(braceBoundary, '\n  console.time("greet");');
+
+      const returnLine = '  return name.toUpperCase();';
+      const returnIndex = findIndexOrThrow(original, returnLine);
+      stack.appendLeft(returnIndex, '  console.timeEnd("greet");\n');
+      stack.appendRight(original.length, '\nmodule.exports = greet;');
+
+      stack.commit();
+
+      const stageTwo = stack.toString();
+      const paramIdx = findIndexOrThrow(stageTwo, '(user)');
+      stack.overwrite(paramIdx + 1, paramIdx + 5, 'account');
+
+      const callPattern = 'name.toUpperCase()';
+      const callIdx = findIndexOrThrow(stageTwo, callPattern);
+      stack.appendLeft(callIdx, 'track(');
+      stack.appendRight(callIdx + callPattern.length, ', "upper")');
     });
   });
 });

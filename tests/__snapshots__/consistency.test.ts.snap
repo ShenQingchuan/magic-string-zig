@@ -36,5 +36,17 @@ console.log(result);",
     "map": "{"version":3,"file":"output.js","sources":["input.js"],"sourcesContent":["let result = format(user.firstName);\\nresult += ':' + format(user.lastName);\\nreturn result;"],"names":[],"mappings":"AAAA,KAAG,gBAAU,gCAAsB;AACnC,sBAAgB,8BAAqB;;AACrC;"}",
     "name": "tracked_calls",
   },
+  {
+    "content": ""use strict";
+function greet(account) {
+  console.time("greet");
+  const name = user.name;
+  console.timeEnd("greet");
+  return track(name.toUpperCase(), "upper");
+}
+module.exports = greet;",
+    "map": "{"version":3,"file":"output.js","sources":["input.js"],"sourcesContent":["function greet(user) {\\n  const name = user.name;\\n  return name.toUpperCase();\\n}"],"names":[],"mappings":";AAAA;;AACA;;AACA;AACA"}",
+    "name": "stack_commits",
+  },
 ]
 `;

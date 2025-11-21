@@ -1,5 +1,6 @@
 const std = @import("std");
 const MagicString = @import("magic_string").MagicString;
+const MagicStringStack = @import("magic_string").MagicStringStack;
 
 // 定义输出结构
 const ScenarioResult = struct {
@@ -183,6 +184,64 @@ pub fn main() !void {
 
         try results.append(allocator, .{
             .name = "tracked_calls",
+            .content = content,
+            .map = map_json,
+        });
+    }
+
+    // Scenario 5: Stack 多次 commit
+    {
+        const raw_source =
+            \\function greet(user) {
+            \\  const name = user.name;
+            \\  return name.toUpperCase();
+            \\}
+            \\
+        ;
+        const source = std.mem.trim(u8, raw_source, " \n\r\t");
+
+        const stack = try MagicStringStack.init(allocator, source);
+        defer stack.deinit();
+
+        try stack.appendLeft(0, "\"use strict\";\n");
+        const brace_idx = std.mem.indexOfScalar(u8, source, '{') orelse unreachable;
+        try stack.appendLeft(brace_idx + 1, "\n  console.time(\"greet\");");
+
+        const return_line = "  return name.toUpperCase();";
+        const return_idx = std.mem.indexOf(u8, source, return_line) orelse unreachable;
+        try stack.appendLeft(return_idx, "  console.timeEnd(\"greet\");\n");
+        try stack.appendRight(source.len, "\nmodule.exports = greet;");
+
+        try stack.commit();
+
+        const stage_two = try stack.toString();
+        defer allocator.free(stage_two);
+
+        if (std.mem.indexOf(u8, stage_two, "(user)")) |param_idx| {
+            try stack.overwrite(param_idx + 1, param_idx + 5, "account");
+        }
+
+        const call_pattern = "name.toUpperCase()";
+        if (std.mem.indexOf(u8, stage_two, call_pattern)) |call_idx| {
+            try stack.appendLeft(call_idx, "track(");
+            try stack.appendRight(call_idx + call_pattern.len, ", \"upper\")");
+        }
+
+        const content = try stack.toString();
+
+        const map_obj = try stack.generateMap(.{
+            .source = "input.js",
+            .file = "output.js",
+            .include_content = true,
+        });
+        defer {
+            map_obj.deinit();
+            allocator.destroy(map_obj);
+        }
+        const map_json = try map_obj.toJSON(allocator);
+
+        try results.append(allocator, .{
+            .name = "stack_commits",
             .content = content,
             .map = map_json,
         });
