@@ -78,7 +78,7 @@ test "appendLeft: 多次插入" {
     const result = try ms.toString();
     defer allocator.free(result);
 
-    try testing.expectEqualStrings(">>> Hello world", result);
+    try testing.expectEqualStrings("Hello >>> world", result);
 }
 
 test "appendRight: 在末尾插入" {
@@ -121,7 +121,7 @@ test "appendRight: 多次插入" {
     const result = try ms.toString();
     defer allocator.free(result);
 
-    try testing.expectEqualStrings("Hello <<< world", result);
+    try testing.expectEqualStrings("Hello world <<<", result);
 }
 
 test "混合操作: appendLeft 和 appendRight" {

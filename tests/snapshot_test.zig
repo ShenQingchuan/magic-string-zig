@@ -81,6 +81,113 @@ pub fn main() !void {
         });
     }
 
+    // Scenario 3: 多行插桩与多次 insert
+    {
+        const raw_source =
+            \\function math(a, b) {
+            \\  const sum = a + b;
+            \\  return sum;
+            \\}
+            \\
+        ;
+        const source = std.mem.trim(u8, raw_source, " \n\r\t");
+
+        const ms = try MagicString.init(allocator, source);
+        defer ms.deinit();
+
+        try ms.appendLeft(0, "/* header */\n");
+
+        const brace_idx = std.mem.indexOfScalar(u8, source, '{') orelse unreachable;
+        try ms.appendLeft(brace_idx + 1, "\n  console.time(\"math\");");
+
+        const sum_line = "  const sum = a + b;";
+        const sum_idx = std.mem.indexOf(u8, source, sum_line) orelse unreachable;
+        try ms.appendRight(sum_idx + sum_line.len, "\n  console.log(sum);");
+
+        const return_line = "  return sum;";
+        const return_idx = std.mem.indexOf(u8, source, return_line) orelse unreachable;
+        try ms.appendLeft(return_idx, "  console.timeEnd(\"math\");\n");
+        try ms.overwrite(return_idx, return_idx + return_line.len, "  return sum * 2;");
+
+        const closing_idx = std.mem.lastIndexOfScalar(u8, source, '}') orelse unreachable;
+        try ms.appendRight(closing_idx + 1, "\n// done");
+
+        try ms.appendRight(source.len, "\n/* footer */");
+
+        const content = try ms.toString();
+
+        const map_obj = try ms.generateMap(.{
+            .source = "input.js",
+            .file = "output.js",
+            .include_content = true,
+        });
+        defer {
+            map_obj.deinit();
+            allocator.destroy(map_obj);
+        }
+        const map_json = try map_obj.toJSON(allocator);
+
+        try results.append(allocator, .{
+            .name = "instrumented_function",
+            .content = content,
+            .map = map_json,
+        });
+    }
+
+    // Scenario 4: 多处 wrap 与边界插入
+    {
+        const raw_source =
+            \\let result = format(user.firstName);
+            \\result += ':' + format(user.lastName);
+            \\return result;
+            \\
+        ;
+        const source = std.mem.trim(u8, raw_source, " \n\r\t");
+
+        const ms = try MagicString.init(allocator, source);
+        defer ms.deinit();
+
+        try ms.overwrite(0, "let".len, "const");
+
+        const first_call = "format(user.firstName)";
+        const first_start = std.mem.indexOf(u8, source, first_call) orelse unreachable;
+        try ms.appendLeft(first_start, "track(");
+        try ms.appendRight(first_start + first_call.len, ", \"first\")");
+
+        const second_call = "format(user.lastName)";
+        const second_start = std.mem.indexOf(u8, source, second_call) orelse unreachable;
+        try ms.appendLeft(second_start, "track(");
+        try ms.appendRight(second_start + second_call.len, ", \"last\")");
+
+        const return_idx = std.mem.indexOf(u8, source, "return result;") orelse unreachable;
+        try ms.appendLeft(return_idx, "// finalize\n");
+
+        const first_line_sep = ";\n";
+        const first_line_idx = std.mem.indexOf(u8, source, first_line_sep) orelse unreachable;
+        try ms.appendRight(first_line_idx + 1, " // init done");
+
+        try ms.appendRight(source.len, "\nconsole.log(result);");
+
+        const content = try ms.toString();
+
+        const map_obj = try ms.generateMap(.{
+            .source = "input.js",
+            .file = "output.js",
+            .include_content = true,
+        });
+        defer {
+            map_obj.deinit();
+            allocator.destroy(map_obj);
+        }
+        const map_json = try map_obj.toJSON(allocator);
+
+        try results.append(allocator, .{
+            .name = "tracked_calls",
+            .content = content,
+            .map = map_json,
+        });
+    }
+
     // 输出到 stdout (JSON)
     const stdout_file = std.fs.File.stdout();
     var stdout_buffer: [4096]u8 = undefined;

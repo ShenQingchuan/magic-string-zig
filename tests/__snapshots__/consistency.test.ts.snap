@@ -13,5 +13,28 @@ var answer = 1;",
     "map": "{"version":3,"file":"output.js","sources":["input.js"],"sourcesContent":["1234567890"],"names":[],"mappings":"AAAA,CAAE,KAAG"}",
     "name": "multiple_edits",
   },
+  {
+    "content": "/* header */
+function math(a, b) {
+  console.time("math");
+  const sum = a + b;
+  console.log(sum);
+  console.timeEnd("math");
+  return sum * 2;
+}
+// done
+/* footer */",
+    "map": "{"version":3,"file":"output.js","sources":["input.js"],"sourcesContent":["function math(a, b) {\\n  const sum = a + b;\\n  return sum;\\n}"],"names":[],"mappings":";AAAA;;AACA;;;AACA;AACA;;"}",
+    "name": "instrumented_function",
+  },
+  {
+    "content": "const result = track(format(user.firstName), "first"); // init done
+result += ':' + track(format(user.lastName), "last");
+// finalize
+return result;
+console.log(result);",
+    "map": "{"version":3,"file":"output.js","sources":["input.js"],"sourcesContent":["let result = format(user.firstName);\\nresult += ':' + format(user.lastName);\\nreturn result;"],"names":[],"mappings":"AAAA,KAAG,gBAAU,gCAAsB;AACnC,sBAAgB,8BAAqB;;AACrC;"}",
+    "name": "tracked_calls",
+  },
 ]
 `;

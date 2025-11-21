@@ -263,9 +263,9 @@ pub const MagicString = struct {
                 var segment = &self.segments.items[last_idx];
                 const new_content = try self.allocator.dupe(u8, content);
                 if (segment.outro) |existing_outro| {
-                    const combined = try self.allocator.alloc(u8, new_content.len + existing_outro.len);
-                    @memcpy(combined[0..new_content.len], new_content);
-                    @memcpy(combined[new_content.len..], existing_outro);
+                    const combined = try self.allocator.alloc(u8, existing_outro.len + new_content.len);
+                    @memcpy(combined[0..existing_outro.len], existing_outro);
+                    @memcpy(combined[existing_outro.len..], new_content);
                     self.allocator.free(existing_outro);
                     self.allocator.free(new_content);
                     segment.outro = combined;
@@ -292,10 +292,9 @@ pub const MagicString = struct {
         if (relative_pos == 0) {
             var seg = &self.segments.items[seg_idx];
             if (seg.intro) |existing_intro| {
-                // 新内容在前，现有内容在后
-                const combined = try self.allocator.alloc(u8, new_content.len + existing_intro.len);
-                @memcpy(combined[0..new_content.len], new_content);
-                @memcpy(combined[new_content.len..], existing_intro);
+                const combined = try self.allocator.alloc(u8, existing_intro.len + new_content.len);
+                @memcpy(combined[0..existing_intro.len], existing_intro);
+                @memcpy(combined[existing_intro.len..], new_content);
                 self.allocator.free(existing_intro);
                 self.allocator.free(new_content);
                 seg.intro = combined;
@@ -309,9 +308,9 @@ pub const MagicString = struct {
             // 将内容添加到右侧 Segment 的 intro
             var seg = &self.segments.items[seg_idx + 1];
             if (seg.intro) |existing_intro| {
-                const combined = try self.allocator.alloc(u8, new_content.len + existing_intro.len);
-                @memcpy(combined[0..new_content.len], new_content);
-                @memcpy(combined[new_content.len..], existing_intro);
+                const combined = try self.allocator.alloc(u8, existing_intro.len + new_content.len);
+                @memcpy(combined[0..existing_intro.len], existing_intro);
+                @memcpy(combined[existing_intro.len..], new_content);
                 self.allocator.free(existing_intro);
                 self.allocator.free(new_content);
                 seg.intro = combined;
@@ -337,9 +336,9 @@ pub const MagicString = struct {
                 var segment = &self.segments.items[last_idx];
                 const new_content = try self.allocator.dupe(u8, content);
                 if (segment.outro) |existing_outro| {
-                    const combined = try self.allocator.alloc(u8, new_content.len + existing_outro.len);
-                    @memcpy(combined[0..new_content.len], new_content);
-                    @memcpy(combined[new_content.len..], existing_outro);
+                    const combined = try self.allocator.alloc(u8, existing_outro.len + new_content.len);
+                    @memcpy(combined[0..existing_outro.len], existing_outro);
+                    @memcpy(combined[existing_outro.len..], new_content);
                     self.allocator.free(existing_outro);
                     self.allocator.free(new_content);
                     segment.outro = combined;
@@ -382,9 +381,9 @@ pub const MagicString = struct {
             if (seg_idx + 1 < self.segments.items.len) {
                 var next_seg = &self.segments.items[seg_idx + 1];
                 if (next_seg.intro) |existing_intro| {
-                    const combined = try self.allocator.alloc(u8, new_content.len + existing_intro.len);
-                    @memcpy(combined[0..new_content.len], new_content);
-                    @memcpy(combined[new_content.len..], existing_intro);
+                    const combined = try self.allocator.alloc(u8, existing_intro.len + new_content.len);
+                    @memcpy(combined[0..existing_intro.len], existing_intro);
+                    @memcpy(combined[existing_intro.len..], new_content);
                     self.allocator.free(existing_intro);
                     self.allocator.free(new_content);
                     next_seg.intro = combined;
@@ -417,9 +416,9 @@ pub const MagicString = struct {
             // 将内容添加到左侧 Segment 的 outro
             var seg = &self.segments.items[seg_idx];
             if (seg.outro) |existing_outro| {
-                const combined = try self.allocator.alloc(u8, new_content.len + existing_outro.len);
-                @memcpy(combined[0..new_content.len], new_content);
-                @memcpy(combined[new_content.len..], existing_outro);
+                const combined = try self.allocator.alloc(u8, existing_outro.len + new_content.len);
+                @memcpy(combined[0..existing_outro.len], existing_outro);
+                @memcpy(combined[existing_outro.len..], new_content);
                 self.allocator.free(existing_outro);
                 self.allocator.free(new_content);
                 seg.outro = combined;

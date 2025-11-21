@@ -243,6 +243,9 @@ pub const SourceMapGenerator = struct {
         var result: std.ArrayList(u8) = .empty;
         errdefer result.deinit(self.allocator);
 
+        const line_starts = try self.computeLineStartOffsets();
+        defer self.allocator.free(line_starts);
+
         // 跟踪上一个映射的位置（用于计算相对偏移）
         var prev_gen_column: i32 = 0;
         var prev_source_index: i32 = 0;
@@ -280,38 +283,86 @@ pub const SourceMapGenerator = struct {
 
             // 处理 Segment 的主体内容
             if (segment.source_offset) |source_offset| {
-                // 这是来自原始源码的内容，需要创建映射
-                // 一个 Segment 作为一个整体映射（不是每个字符）
                 if (segment.content.len > 0) {
-                    // 计算相对偏移
-                    const gen_col_delta = @as(i32, @intCast(gen_column)) - prev_gen_column;
-                    const source_index_delta = 0 - prev_source_index; // 始终是文件 0
-                    const source_line_delta = 0 - prev_source_line; // 单行代码
-                    const source_col_delta = @as(i32, @intCast(source_offset)) - prev_source_column;
+                    const start_lc = lineColumnFromOffset(line_starts, source_offset);
+                    var source_line = start_lc.line;
+                    var source_column = start_lc.column;
+                    var first_in_line = true;
 
-                    // 编码 VLQ segment（4 字段）
-                    const fields = [4]i32{ gen_col_delta, source_index_delta, source_line_delta, source_col_delta };
-                    const encoded = try vlq.encodeVLQSegment(self.allocator, &fields);
-                    defer self.allocator.free(encoded);
-
-                    // 添加逗号分隔符（除了当前行的第一个 segment）
-                    if (has_segment_in_line) {
-                        try result.append(self.allocator, ',');
-                    }
-
-                    try result.appendSlice(self.allocator, encoded);
-                    has_segment_in_line = true;
-
-                    // 更新上一个位置
-                    prev_gen_column = @as(i32, @intCast(gen_column));
-                    prev_source_index = 0;
-                    prev_source_line = 0;
-                    prev_source_column = @as(i32, @intCast(source_offset));
-
-                    // 检查 segment content 中是否有换行符
                     for (segment.content) |c| {
                         if (c == '\n') {
-                            // 遇到换行符，添加行分隔符并重置
+                            if (has_segment_in_line) {
+                                try result.append(self.allocator, ';');
+                                has_segment_in_line = false;
+                            } else {
+                                try result.append(self.allocator, ';');
+                            }
+                            gen_line += 1;
+                            gen_column = 0;
+                            prev_gen_column = 0;
+                            source_line += 1;
+                            source_column = 0;
+                            first_in_line = true;
+                        } else {
+                            if (first_in_line) {
+                                try self.appendMapping(
+                                    &result,
+                                    gen_column,
+                                    source_line,
+                                    source_column,
+                                    &has_segment_in_line,
+                                    &prev_gen_column,
+                                    &prev_source_index,
+                                    &prev_source_line,
+                                    &prev_source_column,
+                                );
+                                first_in_line = false;
+                            }
+                            gen_column += 1;
+                            source_column += 1;
+                        }
+                    }
+                }
+            } else {
+                // 这是插入的内容（overwrite 替换的内容）
+                // 如果它覆盖了原始内容（即是替换操作），且有内容输出，需要生成映射
+                if (segment.original_end > segment.original_start and segment.content.len > 0) {
+                    const lc = lineColumnFromOffset(line_starts, segment.original_start);
+                    var first_in_line = true;
+
+                    for (segment.content) |c| {
+                        if (c == '\n') {
+                            if (has_segment_in_line) {
+                                try result.append(self.allocator, ';');
+                                has_segment_in_line = false;
+                            } else {
+                                try result.append(self.allocator, ';');
+                            }
+                            gen_line += 1;
+                            gen_column = 0;
+                            prev_gen_column = 0;
+                            first_in_line = true;
+                        } else {
+                            if (first_in_line) {
+                                try self.appendMapping(
+                                    &result,
+                                    gen_column,
+                                    lc.line,
+                                    lc.column,
+                                    &has_segment_in_line,
+                                    &prev_gen_column,
+                                    &prev_source_index,
+                                    &prev_source_line,
+                                    &prev_source_column,
+                                );
+                                first_in_line = false;
+                            }
+                            gen_column += 1;
+                        }
+                    }
+                } else {
+                    for (segment.content) |c| {
+                        if (c == '\n') {
                             if (has_segment_in_line) {
                                 try result.append(self.allocator, ';');
                                 has_segment_in_line = false;
@@ -324,54 +375,6 @@ pub const SourceMapGenerator = struct {
                         } else {
                             gen_column += 1;
                         }
-                    }
-                }
-            } else {
-                // 这是插入的内容（overwrite 替换的内容）
-                // 如果它覆盖了原始内容（即是替换操作），且有内容输出，需要生成映射
-                if (segment.original_end > segment.original_start and segment.content.len > 0) {
-                    const replaced_source_pos = segment.original_start;
-
-                    // 计算相对偏移
-                    const gen_col_delta = @as(i32, @intCast(gen_column)) - prev_gen_column;
-                    const source_index_delta = 0 - prev_source_index;
-                    const source_line_delta = 0 - prev_source_line;
-                    const source_col_delta = @as(i32, @intCast(replaced_source_pos)) - prev_source_column;
-
-                    // 编码 VLQ segment
-                    const fields = [4]i32{ gen_col_delta, source_index_delta, source_line_delta, source_col_delta };
-                    const encoded = try vlq.encodeVLQSegment(self.allocator, &fields);
-                    defer self.allocator.free(encoded);
-
-                    // 添加逗号分隔符
-                    if (has_segment_in_line) {
-                        try result.append(self.allocator, ',');
-                    }
-
-                    try result.appendSlice(self.allocator, encoded);
-                    has_segment_in_line = true;
-
-                    // 更新上一个位置（但不更新 gen_column，因为这是插入的内容）
-                    prev_gen_column = @as(i32, @intCast(gen_column));
-                    prev_source_index = 0;
-                    prev_source_line = 0;
-                    prev_source_column = @as(i32, @intCast(replaced_source_pos));
-                }
-
-                // 检查插入内容中是否有换行符
-                for (segment.content) |c| {
-                    if (c == '\n') {
-                        if (has_segment_in_line) {
-                            try result.append(self.allocator, ';');
-                            has_segment_in_line = false;
-                        } else {
-                            try result.append(self.allocator, ';');
-                        }
-                        gen_line += 1;
-                        gen_column = 0;
-                        prev_gen_column = 0;
-                    } else {
-                        gen_column += 1;
                     }
                 }
             }
@@ -399,6 +402,79 @@ pub const SourceMapGenerator = struct {
 
         return result.toOwnedSlice(self.allocator);
     }
+
+    fn appendMapping(
+        self: *SourceMapGenerator,
+        result: *std.ArrayList(u8),
+        gen_column: usize,
+        source_line: usize,
+        source_column: usize,
+        has_segment_in_line: *bool,
+        prev_gen_column: *i32,
+        prev_source_index: *i32,
+        prev_source_line: *i32,
+        prev_source_column: *i32,
+    ) !void {
+        const gen_col_delta = @as(i32, @intCast(gen_column)) - prev_gen_column.*;
+        const source_index_delta = 0 - prev_source_index.*;
+        const source_line_delta = @as(i32, @intCast(source_line)) - prev_source_line.*;
+        const source_col_delta = @as(i32, @intCast(source_column)) - prev_source_column.*;
+
+        const fields = [4]i32{ gen_col_delta, source_index_delta, source_line_delta, source_col_delta };
+        const encoded = try vlq.encodeVLQSegment(self.allocator, &fields);
+        defer self.allocator.free(encoded);
+
+        if (has_segment_in_line.*) {
+            try result.append(self.allocator, ',');
+        }
+
+        try result.appendSlice(self.allocator, encoded);
+        has_segment_in_line.* = true;
+
+        prev_gen_column.* = @as(i32, @intCast(gen_column));
+        prev_source_index.* = 0;
+        prev_source_line.* = @as(i32, @intCast(source_line));
+        prev_source_column.* = @as(i32, @intCast(source_column));
+    }
+
+    fn computeLineStartOffsets(self: *SourceMapGenerator) ![]usize {
+        var starts: std.ArrayList(usize) = .empty;
+        errdefer starts.deinit(self.allocator);
+
+        try starts.append(self.allocator, 0);
+
+        for (self.magic_string.original, 0..) |c, idx| {
+            if (c == '\n' and idx + 1 < self.magic_string.original.len) {
+                try starts.append(self.allocator, idx + 1);
+            }
+        }
+
+        return starts.toOwnedSlice(self.allocator);
+    }
+
+    fn lineColumnFromOffset(line_starts: []const usize, offset: usize) LineColumn {
+        var left: usize = 0;
+        var right: usize = line_starts.len;
+
+        while (left + 1 < right) {
+            const mid = left + (right - left) / 2;
+            if (line_starts[mid] <= offset) {
+                left = mid;
+            } else {
+                right = mid;
+            }
+        }
+
+        return .{
+            .line = left,
+            .column = offset - line_starts[left],
+        };
+    }
+
+    const LineColumn = struct {
+        line: usize,
+        column: usize,
+    };
 };
 
 // ============================================================================
